@@ -8,7 +8,7 @@
 
 #### A Luanti GAME JAM 2026 Submission
 
-**You are A lone defender in an outskirt town on the barren planet of Ki. Pirates are ravaging the land and you need to put a stop to their assault. The locals have given you a modified out-rider - make the best use of it.**
+**You are hire merc sent to destroy the sand beast of the dunes - worshiped by the empire. (TBD)**
 
 Controls:
 - W: Forward
@@ -17,4 +17,4 @@ Controls:
 - Spacebar: Nitro
 - Mouse: Aim
 - Left Mouse button: Bullets
-- Right Mouse button: Bomb/Missile
+- Right Mouse button: Bomb/Missile (TBD)
