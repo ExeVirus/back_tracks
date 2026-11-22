@@ -1,4 +1,11 @@
-Back Tracks Source Code
+Back Tracks
+
+Heavy use of LLM's, specifically Google's line of closed LLMs were used for generating much of the source code, especially the mapgen.lua script and the runtime.lua scripts.
+Every idea/mechanic is my own ideas/thoughts, and very much the map you play is designed by me, and implemented by LLM coding.
+
+I have editted and tuned both files however, so I'll lump it with the rest of the source code.
+
+Textures are drummyfish's handpainted CC0 licensed assets. You can get them from there or use them from here under MIT.
 -----------
 MIT License
 
@@ -21,7 +28,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-Media
------------
-All media is released under a CC-BY 4.0 license, November 2026, ExeVirus
