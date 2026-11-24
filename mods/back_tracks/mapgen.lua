@@ -864,7 +864,7 @@ local function eval_mesa(dx, dz, r, theta)
 	end
 
 	if t_ramp >= 0 then
-		h = floor(H_MESA + 13 * (t_ramp ^ 1.5))
+		h = floor(H_MESA + 15 * (t_ramp ^ 1.5))
 		surf = (perp >= 8.2) and c_sandstone_brick or c_sandstone
 		return h, surf, c_sandstone_brick
 	end

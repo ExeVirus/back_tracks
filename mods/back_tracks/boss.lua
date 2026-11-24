@@ -43,9 +43,6 @@ local GRAB_FIRST_DPS = 13.0
 local GRAB_SECOND_DPS = 24.0
 local GRAB_RELEASE_IMMUNITY = 2.4
 
-local TIP_PUSH_IMPULSE = 22.0
-local TIP_PUSH_COOLDOWN = 0.75
-
 local WRITHE_TIME_NORMAL = 3.0
 local WRITHE_TIME_PHASE2 = 4.2
 local DEATH_EXPLODE_TIME = 1.6
@@ -108,6 +105,109 @@ end
 local function angle_diff(a, b)
 	local d = (a - b + math.pi) % (2.0 * math.pi) - math.pi
 	return d
+end
+
+local function eval_ramp_height(u)
+	local t_ramp = clamp((60.0 - clamp(u, 36.0, 60.0)) / 24.0, 0.0, 1.0)
+	return MESA_Y + 0.5 + 15.0 * (t_ramp ^ 1.5)
+end
+
+local RAMP_AXES = {
+	{ux =  1, uz =  0, vx = 0, vz = 1}, -- East (+X)
+	{ux = -1, uz =  0, vx = 0, vz = 1}, -- West (-X)
+	{ux =  0, uz =  1, vx = 1, vz = 0}, -- South (+Z)
+	{ux =  0, uz = -1, vx = 1, vz = 0}, -- North (-Z)
+}
+
+local function is_on_mesa_ramp(pos)
+	local dx = pos.x - MX
+	local dz = pos.z - MZ
+	for i = 1, 4 do
+		local ax = RAMP_AXES[i]
+		local u = dx * ax.ux + dz * ax.uz
+		if u >= 35.0 and u <= 61.0 then
+			local v = dx * ax.vx + dz * ax.vz
+			if math.abs(v) <= 11.0 then
+				return pos.y <= eval_ramp_height(u) + 2.5
+			end
+		end
+	end
+	return false
+end
+
+local function push_point_outside_ramps(p, pad)
+	local dx = p.x - MX
+	local dz = p.z - MZ
+	local u_min = 35.5 - pad
+	local u_max = 60.5 + pad
+	local v_max = 10.5 + pad
+
+	for i = 1, 4 do
+		local ax = RAMP_AXES[i]
+		local u = dx * ax.ux + dz * ax.uz
+		if u >= u_min and u <= u_max then
+			local v = dx * ax.vx + dz * ax.vz
+			if math.abs(v) <= v_max then
+				local y_top = eval_ramp_height(u) + pad
+				if p.y < y_top then
+					local d_up = y_top - p.y
+					local d_in = u - u_min
+					local d_out = u_max - u
+					local d_side = v_max - math.abs(v)
+
+					if d_up <= d_in and d_up <= d_out and d_up <= d_side then
+						return vector.new(p.x, y_top, p.z), vector.new(0, 1, 0)
+					elseif d_in <= d_out and d_in <= d_side then
+						return vector.new(MX + u_min * ax.ux + v * ax.vx, p.y, MZ + u_min * ax.uz + v * ax.vz),
+							vector.new(-ax.ux, 0, -ax.uz)
+					elseif d_out <= d_side then
+						return vector.new(MX + u_max * ax.ux + v * ax.vx, p.y, MZ + u_max * ax.uz + v * ax.vz),
+							vector.new(ax.ux, 0, ax.uz)
+					else
+						local sv = (v >= 0) and 1.0 or -1.0
+						return vector.new(MX + u * ax.ux + (sv * v_max) * ax.vx, p.y, MZ + u * ax.uz + (sv * v_max) * ax.vz),
+							vector.new(sv * ax.vx, 0, sv * ax.vz)
+					end
+				end
+			end
+		end
+	end
+	return p, nil
+end
+
+local function constrain_segment_outside_ramps(a, b, seg_len, pad)
+	for _pass = 1, 2 do
+		for _, s in ipairs({0.4, 0.75, 1.0}) do
+			local p = vector.add(a, vector.multiply(vector.subtract(b, a), s))
+			local p_out, n_out = push_point_outside_ramps(p, pad)
+			if n_out then
+				local h = math.max(0.0, vector.dot(vector.subtract(a, p_out), n_out))
+				local v = vector.subtract(b, a)
+				local cur_vn = vector.dot(v, n_out)
+				local min_vn = -math.min(h / s, seg_len * 0.96)
+				local target_vn = math.max(cur_vn, min_vn)
+
+				local v_perp = vector.subtract(v, vector.multiply(n_out, cur_vn))
+				if vector.length(v_perp) < 0.05 * seg_len then
+					if math.abs(n_out.y) < 0.5 then
+						v_perp = vector.new(0, 1, 0)
+					else
+						v_perp = vector.new(p.x - MX, 0, p.z - MZ)
+					end
+					v_perp = vector.subtract(v_perp, vector.multiply(n_out, vector.dot(v_perp, n_out)))
+				end
+
+				local v_perp_dir = safe_normalize(v_perp, vector.new(0, 1, 0))
+				local new_perp_len = math.sqrt(math.max(0.0, seg_len * seg_len - target_vn * target_vn))
+				local v_new = vector.add(
+					vector.multiply(n_out, target_vn),
+					vector.multiply(v_perp_dir, new_perp_len)
+				)
+				b = vector.add(a, v_new)
+			end
+		end
+	end
+	return b
 end
 
 local function is_driver_in_boss_arena(dstate)
@@ -613,7 +713,7 @@ local function show_victory_formspec(player, kills)
 		"bgcolor[#0E0A16EE;both]",
 		"box[0.4,0.4;9.7,6.0;#1B1428CC]",
 		"hypertext[0.6,0.7;9.3,1.4;win_title;<center><bigger><style color=#FFDD44><b>YOU WIN!</b></style></bigger></center>]",
-		"hypertext[0.8,2.1;8.9,1.8;win_body;<center><style color=#FFFFFF size=18>The Mesa Sarlacc has been defeated!</style>\n\n<style color=#88EEFF size=15>Enemies & Tentacles Subdued: " .. tostring(kills or 0) .. "</style></center>]",
+		"hypertext[0.8,2.1;8.9,1.8;win_body;<center><style color=#FFFFFF size=18>The Mesa Beast has been defeated!</style>\n\n<style color=#88EEFF size=15>Enemies & Tentacles Subdued: " .. tostring(kills or 0) .. "</style></center>]",
 		"button_exit[1.4,4.7;3.4,1.1;play_again;Play Again]",
 		"button_exit[5.7,4.7;3.4,1.1;continue;Keep Driving]",
 	})
@@ -1222,8 +1322,14 @@ local function step_tentacle(tent, dt, any_airborne, lunge_target_pos)
 			vector.multiply(tent.dirs[k], 1.0 - alpha),
 			vector.multiply(target_dirs[k], alpha)
 		)
-		tent.dirs[k] = safe_normalize(blended, target_dirs[k])
-		tent.joints[k] = vector.add(tent.joints[k - 1], vector.multiply(tent.dirs[k], tent.seg_lens[k]))
+		local seg_dir = safe_normalize(blended, target_dirs[k])
+		local j_prev = tent.joints[k - 1]
+		local j_next = vector.add(j_prev, vector.multiply(seg_dir, tent.seg_lens[k]))
+		if tent.mode ~= "sprout" then
+			j_next = constrain_segment_outside_ramps(j_prev, j_next, tent.seg_lens[k], SEG_WIDTH[k] * 0.65 + 0.25)
+		end
+		tent.dirs[k] = safe_normalize(vector.subtract(j_next, j_prev), seg_dir)
+		tent.joints[k] = j_next
 
 		local seg = tent.segs[k]
 		if seg and seg.obj and seg.obj:is_valid() then
@@ -1302,17 +1408,33 @@ local function step_tentacle(tent, dt, any_airborne, lunge_target_pos)
 				end
 			end
 
-			if not grabbed_now and (boss_time - (tent.tip_push_cd[name] or -100)) > TIP_PUSH_COOLDOWN then
+            if not grabbed_now then
 				local cp = closest_point_on_seg(tp, tent.joints[4], tent.joints[5])
 				local diff = vector.subtract(tp, cp)
 				local hit_dist = SEG_TOUCH_R[5] + 1.70
-				if vector.dot(diff, diff) <= hit_dist * hit_dist then
-					tent.tip_push_cd[name] = boss_time
-					local push_dir = safe_normalize(vector.new(diff.x, 0.35, diff.z), vector.new(math.cos(tent.base_angle), 0.35, math.sin(tent.base_angle)))
-					dstate.vel = vector.add(dstate.vel, vector.multiply(push_dir, TIP_PUSH_IMPULSE))
-					if dstate.hp > 18.0 then
-						dstate.hp = math.max(18.0, dstate.hp - 5.0)
-						dstate.hp_delay = 2.0
+				local d2 = vector.dot(diff, diff)
+				if d2 <= hit_dist * hit_dist then
+					local fallback_n = vector.new(math.cos(tent.base_angle), 0.0, math.sin(tent.base_angle))
+					local n
+					if diff.y < 0.0 then
+						n = safe_normalize(vector.new(diff.x, 0.0, diff.z), fallback_n)
+					else
+						n = safe_normalize(diff, fallback_n)
+					end
+
+					local dist = math.sqrt(d2)
+					local pen = hit_dist - dist
+					if pen > 0.002 then
+						local pushed_pos = vector.add(tp, vector.multiply(n, pen))
+						if not back_tracks.raycast_solid(tp, pushed_pos) then
+							dstate.pos = pushed_pos
+						end
+					end
+
+					local vn = vector.dot(dstate.vel, n)
+					if vn < 0.0 then
+						local restitution = (vn < -8.0) and 0.24 or 0.0
+						dstate.vel = vector.subtract(dstate.vel, vector.multiply(n, (1.0 + restitution) * vn))
 					end
 				end
 			end
@@ -1337,7 +1459,7 @@ local function update_boss_hud(name, player, dstate, dt)
 			type = "text",
 			position = {x = 0.5, y = 0.05},
 			offset = {x = 0, y = 0},
-			text = "MESA SARLACC",
+			text = "MESA BEAST",
 			alignment = {x = 0, y = 0},
 			number = 0xFF7744,
 			size = {x = 1.5, y = 1.5},
@@ -1445,7 +1567,7 @@ local function select_lunge_targets()
 	end
 
 	for _, dstate in pairs(back_tracks.active_drivers) do
-		if is_driver_in_boss_arena(dstate) and dstate.hp > 0 and not dstate.boss_swallow_lock and not dstate.boss_grabbed then
+		if is_driver_in_boss_arena(dstate) and dstate.hp > 0 and not dstate.boss_swallow_lock and not dstate.boss_grabbed and not is_on_mesa_ramp(dstate.pos) then
 			local best_tent = nil
 			local best_d2 = 50.0 * 50.0
 
@@ -1663,7 +1785,7 @@ core.register_globalstep(function(dtime)
 				local dx = dstate.pos.x - MX
 				local dz = dstate.pos.z - MZ
 				local d2 = dx * dx + dz * dz
-				if d2 <= 72.0 * 72.0 and dstate.pos.y >= 184.0 and dstate.hp > 0 and not dstate.boss_swallow_lock then
+				if d2 <= 72.0 * 72.0 and dstate.pos.y >= 184.0 and not is_on_mesa_ramp(dstate.pos) and dstate.hp > 0 and not dstate.boss_swallow_lock then
 					any_airborne = dstate.pos
 				end
 			end

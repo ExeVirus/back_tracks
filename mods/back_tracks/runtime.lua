@@ -79,6 +79,17 @@ local CHECKPOINTS = {
 	},
 }
 
+local MESA_CHECKPOINT_IDX = #CHECKPOINTS
+for i = 1, #CHECKPOINTS do
+	if CHECKPOINTS[i].name == "Mesa" then
+		MESA_CHECKPOINT_IDX = i
+		break
+	end
+end
+local MESA_CENTER_X = -1145.0
+local MESA_CENTER_Z = 0.0
+local MESA_SPIRAL_OUTER_RADIUS = 130.0 -- Adjust to match your mapgen's upper spiral outer edge
+
 -- Truck Animation Tuning
 local WHEEL_BONES = { "wheel_fl", "wheel_fr", "wheel_rl", "wheel_rr" }
 local IDLE_SPEED_THRESHOLD = 0.45     -- World units/sec below which truck counts as stopped
@@ -641,6 +652,7 @@ local function resolve_chassis_collisions(state)
 	end
 
 	if #contacts > 0 then
+		state.chassis_touching = true
 		for pass = 1, 2 do
 			for k = 1, #contacts do
 				local c = contacts[k]
@@ -1768,9 +1780,15 @@ local function step_vehicle_physics(state, controls, dt)
 	state.up = up
 	state.forward = forward
 	state.wheels_touching = wheels_touching
+	if wheels_touching > 0 then
+		state.ground_contact = true
+	end
 
 	-- 5. Resolve 3D Seam-Free Chassis Collisions
 	resolve_chassis_collisions(state)
+	if state.chassis_touching then
+		state.ground_contact = true
+	end
 end
 
 -----------------------------------------
@@ -1817,6 +1835,8 @@ local function reset_driver_to_checkpoint(player, state)
 	state.aim_dir = vector.copy(forward)
 	state.steer_angle = 0
 	state.wheels_touching = 0
+	state.chassis_touching = false
+	state.ground_contact = false
 	state.air_time = 0
 	state.wheel_spin_rad = 0
 	state.air_wheels_spinning = false
@@ -1888,6 +1908,8 @@ local function teleport_driver(player, target_pos, yaw)
 	state.forward = forward
 	state.steer_angle = 0
 	state.wheels_touching = 0
+	state.chassis_touching = false
+	state.ground_contact = false
 	state.air_time = 0
 	state.ground_ready = false
 	state.boss_swallow_lock = false
@@ -2178,6 +2200,8 @@ local function enter_truck_mode(player)
 		boss_arena_entered = nil,
 
 		wheels_touching = 0,
+		chassis_touching = false,
+		ground_contact = false,
 		air_time = 0,
 		wheel_spin_rad = 0,
 		air_wheels_spinning = false,
@@ -2285,7 +2309,7 @@ end
 -- Join / Respawn / Night-Dusk Atmosphere
 -----------------------------------------
 local function apply_dusk_atmosphere(player)
-	player:override_day_night_ratio(0.22)
+	player:override_day_night_ratio(0.40)
 	player:set_sky({
 		type = "regular",
 		sky_color = {
@@ -2297,12 +2321,12 @@ local function apply_dusk_atmosphere(player)
 			night_horizon = "#2B1822",
 			indoors = "#0C0914",
 		},
-		clouds = true,
+		clouds = false,
 	})
 end
 
 core.register_on_joinplayer(function(player)
-	core.set_timeofday(0.83)
+	core.set_timeofday(0.60)
 	apply_dusk_atmosphere(player)
 	player:set_pos(START_POS)
 	player:set_look_horizontal(START_YAW)
@@ -2380,10 +2404,12 @@ core.register_globalstep(function(dtime)
 			state.prev_aux1 = aux_pressed
 
 			if not state.boss_swallow_lock then
+				state.ground_contact = false
 				local speed_est = vector.length(state.vel) + 15.0
 				local n_steps = clamp(math.ceil((speed_est * clamped_dt) / MAX_DISP_PER_STEP), 2, MAX_SUB_STEPS)
 				local step_dt = clamped_dt / n_steps
 				for _ = 1, n_steps do
+					state.chassis_touching = false
 					step_vehicle_physics(state, controls, step_dt)
 				end
 			end
@@ -2475,12 +2501,24 @@ core.register_globalstep(function(dtime)
 				state.light_nodes = update_headlights(state.light_nodes, beam)
 			end
 
-			-- Lava damage + Void safety
+			-- Lava damage + Void / Boss Abyss safety
 			local node_here = core.get_node_or_nil(state.pos)
+			local node_def = node_here and core.registered_nodes[node_here.name]
 			if node_here and (node_here.name == MODNAME .. ":lava_source" or node_here.name == MODNAME .. ":lava_flowing") then
 				back_tracks.damage_player(name, LAVA_DPS * clamped_dt)
 			elseif state.pos.y < -30 then
 				state.hp = 0
+			end
+
+			if state.hp > 0 and state.checkpoint_idx >= MESA_CHECKPOINT_IDX and not state.boss_swallow_lock then
+				local dx = state.pos.x - MESA_CENTER_X
+				local dz = state.pos.z - MESA_CENTER_Z
+				if (dx * dx + dz * dz) > (MESA_SPIRAL_OUTER_RADIUS * MESA_SPIRAL_OUTER_RADIUS) then
+					local landed_in_liquid = node_def and node_def.liquidtype and node_def.liquidtype ~= "none"
+					if state.ground_contact or landed_in_liquid then
+						state.hp = 0
+					end
+				end
 			end
 
 			-- Health recharge or Respawn at last reached checkpoint
