@@ -8,7 +8,7 @@
 
 #### A Luanti GAME JAM 2026 Submission
 
-**You are a bounty hunter aiming to capture a Desert Beast. (TBD)**
+**You are a bounty hunter aiming to kill a Mesa Beast. (TBD)**
 
 Controls:
 - W: Forward
@@ -17,4 +17,4 @@ Controls:
 - Spacebar: Nitro
 - Mouse: Aim
 - Left Mouse button: Bullets
-- Right Mouse button: Bomb/Missile (TBD)
+- Right Mouse button: Bomb/Missile
