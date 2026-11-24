@@ -4,7 +4,7 @@
 ██▄▄█▀ ██▀██ ▀████ ██ ██     ██   ██ ██ ██▀██ ▀████ ██ ██ ▄▄██▀
 ```
 
-![Back Tracks Screenshot](screenshot.jpg)
+![Back Tracks Screenshot](screenshot.png)
 
 #### A Luanti GAME JAM 2026 Submission
 
