@@ -1,599 +1,624 @@
--- local MODNAME = core.get_current_modname()
+local MODNAME = core.get_current_modname()
 
--- -----------------------------------------
--- -- Enemy Tuning Constants
--- -----------------------------------------
--- local TARGET_BIKES_PER_PLAYER = 4
--- local TARGET_FLYERS_IN_ZONE   = 3
+local clamp = back_tracks.clamp
+local round_int = back_tracks.round_int
+local is_node_solid = back_tracks.is_node_solid
+local raycast_solid = back_tracks.raycast_solid
 
--- local BIKE_GRAVITY       = 15.0
--- local BIKE_SPRING_K      = 14.0
--- local BIKE_SPRING_DAMP   = 4.5
--- local BIKE_SUSP_REST     = 1.05
--- local BIKE_BASE_SPEED    = 46.0
--- local BIKE_CATCHUP_SPEED = 70.0 -- Catches up over time when trailing behind
--- local BIKE_ACCEL         = 26.0
--- local BIKE_TURN_RATE     = 3.4
--- local BIKE_FIRE_INTERVAL = 2.0
--- local BIKE_DESPAWN_DIST  = 95.0
+-----------------------------------------
+-- Turret & Projectile Tuning
+-----------------------------------------
+local TURRET_MAX_RANGE = 135.0
+local TURRET_SPAWN_RADIUS = 165.0
+local TURRET_FIRE_INTERVAL = 1.35
+local TURRET_LOS_CHECK_INTERVAL = 0.20
+local TURRET_MAX_HP = 25
+local TURRET_HIT_RADIUS = 1.75
+local TURRET_HALF_H = 0.90
+local TURRET_MUZZLE_Y = 0.75
 
--- local FLYER_BASE_SPEED   = 44.0
--- local FLYER_FIRE_INTERVAL = 2.2
--- local FLYER_DESPAWN_DIST = 115.0
+local ENEMY_BULLET_SPEED = 90.0
+local ENEMY_BULLET_MAX_DIST = 215.0
+local ENEMY_BULLET_DAMAGE = 14.0
+local ENEMY_BULLET_HIT_R = 1.80
+local ENEMY_BULLET_SEEK_RATE = math.rad(65)  -- Max steering rate (rad/s) toward player
+local ENEMY_BULLET_SEEK_MIN_DOT = 0.30       -- Stops seeking once bullet passes target
 
--- local ENEMY_BULLET_SPEED    = 72.0
--- local ENEMY_BULLET_MAX_DIST = 95.0
--- local ENEMY_BULLET_DAMAGE   = 12.0
+local TURRET_TEX = "[fill:16x16:#FF1A1A"
+local TURRET_TOP_TEX = "[fill:16x16:#FF4422"
+local ENEMY_BULLET_TEX = "[fill:16x16:#FF3300"
 
--- local BIKE_TEX_BODY  = "[fill:16x16:#AA2222"
--- local BIKE_TEX_HEAD  = "[fill:16x16:#FFF099"
--- local FLYER_TEX_BODY = "[fill:16x16:#7722BB"
--- local FLYER_TEX_HEAD = "[fill:16x16:#88FFFF"
--- local E_BULLET_TEX   = "[fill:16x16:#FFAA00"
+back_tracks.turret_generation = back_tracks.turret_generation or 1
 
--- local next_enemy_id = 0
--- local function alloc_enemy_id()
--- 	next_enemy_id = next_enemy_id + 1
--- 	return next_enemy_id
--- end
+-----------------------------------------
+-- Course Geometry Helpers (mirrors mapgen.lua)
+-----------------------------------------
+local MX, MZ = -1145, 0
+local R_BASE = 185
+local R_MESA = 90
+local H_MESA = 180
+local INV_MTN_EXP = 1 / 1.55
 
--- -- Helper: check if position is in a Starfox Flyer zone
--- -- (Curvy Canyon, Ramps, Causeways, or Mountain Spiral)
--- local function is_in_flyer_zone(pos)
--- 	if pos.x <= 5 and pos.x >= -970 and math.abs(pos.z) <= 130 then
--- 		return true
--- 	end
--- 	local dx = pos.x - (-1145)
--- 	local dz = pos.z
--- 	local r2 = dx * dx + dz * dz
--- 	if r2 <= 210 * 210 and r2 >= 86 * 86 then
--- 		return true
--- 	end
--- 	return false
--- end
+local function smoothstep(edge0, edge1, x)
+	local t = clamp((x - edge0) / (edge1 - edge0), 0, 1)
+	return t * t * (3 - 2 * t)
+end
 
--- -- Find walkable surface Y near (x, z) starting from y_hint
--- local function find_surface_y_near(x, y_hint, z)
--- 	local ix = back_tracks.round_int(x)
--- 	local iz = back_tracks.round_int(z)
--- 	local top_y = back_tracks.round_int(y_hint + 18)
--- 	local bot_y = back_tracks.round_int(y_hint - 24)
--- 	for ny = top_y, bot_y, -1 do
--- 		local p = {x = ix, y = ny, z = iz}
--- 		if back_tracks.is_node_solid(p) then
--- 			if not back_tracks.is_node_solid({x = ix, y = ny + 1, z = iz})
--- 			and not back_tracks.is_node_solid({x = ix, y = ny + 2, z = iz}) then
--- 				return ny + 1.4
--- 			end
--- 		end
--- 	end
--- 	return nil
--- end
+local function lerp(a, b, t)
+	return a + (b - a) * t
+end
 
--- -----------------------------------------
--- -- Enemy Bullet Entity
--- -----------------------------------------
--- core.register_entity(MODNAME .. ":enemy_bullet", {
--- 	initial_properties = {
--- 		visual = "cube",
--- 		visual_size = {x = 0.24, y = 0.24, z = 0.65},
--- 		textures = {
--- 			E_BULLET_TEX, E_BULLET_TEX, E_BULLET_TEX,
--- 			E_BULLET_TEX, E_BULLET_TEX, E_BULLET_TEX,
--- 		},
--- 		glow = 14,
--- 		physical = false,
--- 		pointable = false,
--- 		collide_with_objects = false,
--- 		static_save = false,
--- 	},
+local function steer_dir_toward(dir, target_dir, max_angle)
+	local dot_v = clamp(vector.dot(dir, target_dir), -1.0, 1.0)
+	local ang = math.acos(dot_v)
+	if ang <= 1e-4 then
+		return dir
+	end
+	local step = math.min(ang, max_angle)
+	local axis = vector.cross(dir, target_dir)
+	local alen = vector.length(axis)
+	if alen < 1e-5 then
+		return dir
+	end
+	axis = vector.multiply(axis, 1.0 / alen)
+	local c = math.cos(step)
+	local s = math.sin(step)
+	local k_dot_v = vector.dot(axis, dir)
+	local k_cross_v = vector.cross(axis, dir)
+	return vector.normalize(vector.add(
+		vector.multiply(dir, c),
+		vector.add(
+			vector.multiply(k_cross_v, s),
+			vector.multiply(axis, k_dot_v * (1.0 - c))
+		)
+	))
+end
 
--- 	on_activate = function(self)
--- 		self.dir = vector.new(0, 0, 1)
--- 		self.dist_traveled = 0
--- 	end,
+local function mtn_radius_at_height(y)
+	if y <= 0 then return R_BASE end
+	if y >= H_MESA then return R_MESA end
+	local u = (y / H_MESA) ^ INV_MTN_EXP
+	return R_BASE - u * (R_BASE - R_MESA)
+end
 
--- 	on_step = function(self, dtime)
--- 		local dt = math.min(dtime, 0.1)
--- 		local pos = self.object:get_pos()
--- 		if not pos or not self.dir then
--- 			self.object:remove()
--- 			return
--- 		end
+local function eval_lower_spiral_y(phi)
+	local join_phi = 0.24
+	local end_phi = 2.0 * math.pi
+	if phi <= join_phi then return 12 end
+	local t = clamp((phi - join_phi) / (end_phi - join_phi), 0, 1)
+	return 12 + (90 - 12) * t - 7.5 * math.sin(t * 4 * math.pi) + 4.0 * math.sin(t * 6 * math.pi)
+end
 
--- 		local step_dist = ENEMY_BULLET_SPEED * dt
--- 		local next_pos = vector.add(pos, vector.multiply(self.dir, step_dist))
+local function eval_upper_spiral_y(phi_u)
+	local end_phi = 2.0 * math.pi
+	if phi_u <= 0.12 then return 96 end
+	local t = clamp((phi_u - 0.12) / (end_phi - 0.12), 0, 1)
+	return 96 + (H_MESA - 96) * t - 8.0 * math.sin(t * 4 * math.pi) + 4.5 * math.sin(t * 6 * math.pi)
+end
 
--- 		-- Check hit against active player trucks
--- 		local seg = vector.subtract(next_pos, pos)
--- 		local seg_len2 = vector.dot(seg, seg)
--- 		if seg_len2 > 1e-6 then
--- 			for name, driver in pairs(back_tracks.active_drivers) do
--- 				local dp = driver.pos
--- 				local t = back_tracks.clamp(vector.dot(vector.subtract(dp, pos), seg) / seg_len2, 0, 1)
--- 				local closest = vector.add(pos, vector.multiply(seg, t))
--- 				local d2 = vector.dot(vector.subtract(dp, closest), vector.subtract(dp, closest))
--- 				if d2 <= 2.1 * 2.1 then
--- 					back_tracks.damage_player(name, ENEMY_BULLET_DAMAGE)
--- 					back_tracks.spawn_explosion(closest, 0.45)
--- 					self.object:remove()
--- 					return
--- 				end
--- 			end
--- 		end
+local function catmull_rom_val(p0, p1, p2, p3, t)
+	local t2 = t * t
+	local t3 = t2 * t
+	return 0.5 * (
+		(2 * p1)
+		+ (-p0 + p2) * t
+		+ (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2
+		+ (-p0 + 3 * p1 - 3 * p2 + p3) * t3
+	)
+end
 
--- 		if back_tracks.raycast_solid(pos, next_pos) then
--- 			self.object:remove()
--- 			return
--- 		end
+local function eval_spline_at(ctrl_pts, seg_idx, t)
+	local n = #ctrl_pts
+	local p0 = ctrl_pts[math.max(1, seg_idx - 1)]
+	local p1 = ctrl_pts[seg_idx]
+	local p2 = ctrl_pts[seg_idx + 1]
+	local p3 = ctrl_pts[math.min(n, seg_idx + 2)]
+	local x = catmull_rom_val(p0[1], p1[1], p2[1], p3[1], t)
+	local y = catmull_rom_val(p0[2], p1[2], p2[2], p3[2], t)
+	local z = catmull_rom_val(p0[3], p1[3], p2[3], p3[3], t)
 
--- 		self.dist_traveled = self.dist_traveled + step_dist
--- 		if self.dist_traveled >= ENEMY_BULLET_MAX_DIST then
--- 			self.object:remove()
--- 			return
--- 		end
+	local dt = 0.02
+	local t2 = math.min(1.0, t + dt)
+	local x2 = catmull_rom_val(p0[1], p1[1], p2[1], p3[1], t2)
+	local z2 = catmull_rom_val(p0[3], p1[3], p2[3], p3[3], t2)
+	local dx, dz = x2 - x, z2 - z
+	local len = math.sqrt(dx * dx + dz * dz)
+	if len < 1e-4 then dx, dz = -1, 0 else dx, dz = dx / len, dz / len end
+	local px, pz = -dz, dx
+	return x, y, z, px, pz
+end
 
--- 		self.object:set_pos(next_pos)
--- 	end,
--- })
+local function ramp_track_z(x)
+	local s = -300 - x
+	return 14 * math.sin(s * math.pi / 170) * smoothstep(0, 30, s) * smoothstep(340, 305, s)
+end
 
--- local function fire_enemy_bullet(origin, target_pos, spread)
--- 	local to_target = vector.subtract(target_pos, origin)
--- 	local dist = vector.length(to_target)
--- 	if dist < 1.0 then return end
--- 	local dir = vector.divide(to_target, dist)
--- 	if spread and spread > 0 then
--- 		dir.x = dir.x + (math.random() - 0.5) * spread
--- 		dir.y = dir.y + (math.random() - 0.5) * spread * 0.5
--- 		dir.z = dir.z + (math.random() - 0.5) * spread
--- 		dir = vector.normalize(dir)
--- 	end
--- 	local b = core.add_entity(origin, MODNAME .. ":enemy_bullet")
--- 	if b then
--- 		local ent = b:get_luaentity()
--- 		ent.dir = dir
--- 		ent.dist_traveled = 0
--- 		b:set_rotation(vector.dir_to_rotation(dir))
--- 	end
--- end
+-----------------------------------------
+-- Deterministic Turret Spawn List (Mesa intentionally empty for boss)
+-----------------------------------------
+local TURRET_SPAWNS = {}
 
--- -----------------------------------------
--- -- 1. Chasing Dirt Bike Entity
--- -----------------------------------------
--- core.register_entity(MODNAME .. ":dirt_bike", {
--- 	initial_properties = {
--- 		visual = "cube",
--- 		visual_size = {x = 0.85, y = 0.90, z = 2.0},
--- 		textures = {
--- 			BIKE_TEX_BODY, BIKE_TEX_BODY, BIKE_TEX_BODY,
--- 			BIKE_TEX_BODY, BIKE_TEX_BODY, BIKE_TEX_HEAD,
--- 		},
--- 		glow = 12,
--- 		physical = false,
--- 		pointable = false,
--- 		collide_with_objects = false,
--- 		static_save = false,
--- 	},
+local function add_spawn(x, z, y_min, y_max, tag)
+	TURRET_SPAWNS[#TURRET_SPAWNS + 1] = {
+		id = #TURRET_SPAWNS + 1,
+		x = round_int(x),
+		z = round_int(z),
+		y_min = math.floor(y_min),
+		y_max = math.ceil(y_max),
+		tag = tag,
+		dead = false,
+		obj = nil,
+	}
+end
 
--- 	on_activate = function(self)
--- 		self.eid = alloc_enemy_id()
--- 		self.vel = vector.zero()
--- 		self.yaw = 0
--- 		self.pitch = 0
--- 		self.roll = 0
--- 		self.lane_offset = (math.random() - 0.5) * 10.0
--- 		self.fire_timer = 1.0 + math.random() * 1.5
--- 		self.light_timer = 0
--- 		self.light_nodes = {}
--- 		self.target_name = nil
--- 		self.dead = false
+-- 1. Outer Desert Ground Turrets (anti-cheese outside Canyon, Ramps, Causeways, Mountain Skirt)
+for _, x in ipairs({-50, -110, -170, -230, -280}) do
+	add_spawn(x,  122, -4, 24, "desert_canyon")
+	add_spawn(x, -122, -4, 24, "desert_canyon")
+end
+for _, x in ipairs({-350, -430, -510, -590}) do
+	add_spawn(x,  118, -4, 24, "desert_ramps")
+	add_spawn(x, -118, -4, 24, "desert_ramps")
+end
+for _, x in ipairs({-700, -780, -860, -930}) do
+	add_spawn(x,  144, -4, 24, "desert_causeway")
+	add_spawn(x, -144, -4, 24, "desert_causeway")
+end
+for _, th in ipairs({0.7, 1.4, 2.2, 3.0, 3.8, 4.6, 5.4}) do
+	local r_skirt = R_BASE + 16
+	add_spawn(MX + r_skirt * math.cos(th), MZ + r_skirt * math.sin(th), -4, 24, "desert_mtn_skirt")
+end
 
--- 		local ent_ref = {
--- 			obj = self.object,
--- 			kind = "bike",
--- 			hit_radius = 1.9,
--- 			pos = self.object:get_pos(),
--- 			dead = false,
--- 			kill = function(killer_name)
--- 				if self.dead then return end
--- 				self.dead = true
--- 				back_tracks.clear_light_list(self.light_nodes)
--- 				self.light_nodes = {}
--- 				back_tracks.spawn_explosion(self.object:get_pos() or vector.zero(), 1.1)
--- 				if killer_name then back_tracks.register_kill(killer_name) end
--- 				back_tracks.enemies[self.eid] = nil
--- 				self.object:remove()
--- 			end,
--- 		}
--- 		self.reg = ent_ref
--- 		back_tracks.enemies[self.eid] = ent_ref
--- 	end,
+-- 2. Top of Canyon Walls (outer rim + inner peninsulas)
+for _, x in ipairs({-40, -90, -140, -190, -240, -285}) do
+	add_spawn(x,  76, 30, 50, "canyon_top")
+	add_spawn(x, -76, 30, 50, "canyon_top")
+end
+for _, pt in ipairs({{-38, -10}, {-78, 12}, {-125, -10}, {-170, 12}, {-215, -10}, {-258, 12}}) do
+	add_spawn(pt[1], pt[2], 30, 50, "canyon_peninsula")
+end
 
--- 	on_deactivate = function(self)
--- 		back_tracks.clear_light_list(self.light_nodes)
--- 		self.light_nodes = {}
--- 		if self.eid then
--- 			back_tracks.enemies[self.eid] = nil
--- 		end
--- 	end,
+-- 3. Top of Ramp Walls
+for _, x in ipairs({-345, -400, -455, -510, -565, -620}) do
+	local zc = ramp_track_z(x)
+	add_spawn(x, zc + 78, 34, 58, "ramp_wall_top")
+	add_spawn(x, zc - 78, 34, 58, "ramp_wall_top")
+end
 
--- 	on_step = function(self, dtime)
--- 		if self.dead then return end
--- 		local dt = math.min(dtime, 0.1)
--- 		local pos = self.object:get_pos()
--- 		if not pos then return end
+-- 4. Backsides of Ramps (hidden behind ramp crest until you fly over or pass)
+for _, r in ipairs({
+	{s = 63, dz = -15},
+	{s = 166, dz = 0}, 
+	{s = 268, dz = 0},
+	{s = 315, dz = 0},
+}) do
+	local x = -300 - r.s
+	local z = ramp_track_z(x) + r.dz
+	add_spawn(x, z, 6, 20, "ramp_backside")
+end
 
--- 		local driver = self.target_name and back_tracks.active_drivers[self.target_name]
--- 		if not driver then
--- 			back_tracks.clear_light_list(self.light_nodes)
--- 			back_tracks.enemies[self.eid] = nil
--- 			self.object:remove()
--- 			return
--- 		end
+-- 6. Edges of Causeways (low paths & high skyways)
+local causeway_paths = {
+	{                 {-660, 10,   0}, {-695,  6,  -8},                                 {-865,  6,  10},                 {-946, 12,  0} },
+	{ {-640, 12,  4},                                  {-745,  3,  68},                 {-868,  5,  50},                                },
+	{                 {-658, 10, -10},                 {-745,  3, -68}, {-805,  3, -70},                 {-915,  9,-22}, {-946, 12,  0} },
+	-- Skyways (index 4..5 here)
+	{ {-656, 10,  10},                 {-735, 36,  34}, {-800, 44,  16}, {-865, 34,  38},                 },
+	{ {-656, 10, -10}, {-682, 22, -26}, {-735, 36, -34},                 {-865, 34, -38}, {-912, 23, -22} },
+}
+for p_idx, path in ipairs(causeway_paths) do
+	for seg = 2, #path - 2 do
+		local x, y, z, px, pz = eval_spline_at(path, seg, 0.5)
+		local side = (seg % 2 == 0) and 2.6 or -2.6
+		add_spawn(x + px * side, z + pz * side, y - 3, y + 4, (p_idx >= 4) and "skyway_edge" or "causeway_edge")
+	end
+end
 
--- 		local dist_to_player = vector.distance(pos, driver.pos)
--- 		if dist_to_player > BIKE_DESPAWN_DIST or pos.y < -25 then
--- 			back_tracks.clear_light_list(self.light_nodes)
--- 			back_tracks.enemies[self.eid] = nil
--- 			self.object:remove()
--- 			return
--- 		end
+-- 7. Spiral Mountain Halfpipe: Outer Wall Rim (punishes jumping out) + Along the Spiral Climb
+for i = 0, 9 do
+	local phi = 0.65 + i * 0.57
+	local yc = eval_lower_spiral_y(phi)
+	local rc = mtn_radius_at_height(yc) + 2
+	local r_wall = rc + 12.2
+	add_spawn(MX + r_wall * math.cos(phi), MZ + r_wall * math.sin(phi), yc + 13, yc + 24, "lower_spiral_outer_wall")
+	if i % 2 == 1 then
+		local dr_climb = (i % 4 == 1) and 7.5 or -7.5
+		local r_climb = rc + dr_climb
+		add_spawn(MX + r_climb * math.cos(phi), MZ + r_climb * math.sin(phi), yc, yc + 14, "lower_spiral_climb")
+	end
+end
 
--- 		-- Aim slightly offset beside the player so bikes fan out naturally
--- 		local _, _, p_fwd = back_tracks.compute_basis(driver.yaw, 0, 0)
--- 		local p_right = vector.new(p_fwd.z, 0, -p_fwd.x)
--- 		local chase_target = vector.add(
--- 			driver.pos,
--- 			vector.add(vector.multiply(p_right, self.lane_offset), vector.multiply(driver.vel, 0.25))
--- 		)
+for i = 0, 9 do
+	local phi_u = 0.30 + i * 0.60
+	local theta = math.pi + phi_u
+	local yc = eval_upper_spiral_y(phi_u)
+	local rc = mtn_radius_at_height(yc) + ((phi_u < 0.92 * math.pi) and 2 or 1)
+	local r_wall = rc + 12.0
+	add_spawn(MX + r_wall * math.cos(theta), MZ + r_wall * math.sin(theta), yc + 13, yc + 25, "upper_spiral_outer_wall")
+	if i % 2 == 0 then
+		local dr_climb = (rc - 7.5 > R_MESA + 4 and i % 4 == 0) and -7.5 or 7.5
+		local r_climb = rc + dr_climb
+		add_spawn(MX + r_climb * math.cos(theta), MZ + r_climb * math.sin(theta), yc, yc + 14, "upper_spiral_climb")
+	end
+end
 
--- 		-- Rubberband target speed: catches up when far, paces aggressively when close
--- 		local target_speed = BIKE_BASE_SPEED
--- 		if dist_to_player > 24.0 then
--- 			local t = back_tracks.clamp((dist_to_player - 24.0) / 35.0, 0, 1)
--- 			target_speed = BIKE_BASE_SPEED + (BIKE_CATCHUP_SPEED - BIKE_BASE_SPEED) * t
--- 		elseif dist_to_player < 10.0 then
--- 			target_speed = 38.0
--- 		end
+-- 8. Inside the Mountain Tunnels (branches 2, 3, 4)
+local r_in = mtn_radius_at_height(90) + 3
+local r_out = mtn_radius_at_height(96) + 3
+local hubA_x, hubA_y, hubA_z = MX + r_in - 26, 90, 30
+local hubB_x, hubB_y, hubB_z = MX - r_out + 26, 96, 30
+local abx, abz = hubB_x - hubA_x, hubB_z - hubA_z
+local ab_len = math.sqrt(abx * abx + abz * abz)
+local px_u, pz_u = -abz / ab_len, abx / ab_len
 
--- 		-- Sub-stepped terrain physics (mirrors player truck physics!)
--- 		local sub_steps = 3
--- 		local sdt = dt / sub_steps
--- 		for _ = 1, sub_steps do
--- 			local right, up, forward = back_tracks.compute_basis(self.yaw, self.pitch, self.roll)
+local tunnel_branches = {
+	{
+		{ hubA_x - 14, 90, 24 },
+		{ lerp(hubA_x, hubB_x, 0.22) - px_u * 28, 86, lerp(hubA_z, hubB_z, 0.22) - pz_u * 28 },
+		{ lerp(hubA_x, hubB_x, 0.52) - px_u * 46, 76, lerp(hubA_z, hubB_z, 0.52) - pz_u * 46 },
+		{ lerp(hubA_x, hubB_x, 0.80) - px_u * 24, 88, lerp(hubA_z, hubB_z, 0.80) - pz_u * 24 },
+		{ hubB_x + 14, 96, 24 },
+	},
+	{
+		{ hubA_x - 14, 90, 24 },
+		{ lerp(hubA_x, hubB_x, 0.30) + px_u * 2,  87, lerp(hubA_z, hubB_z, 0.30) + pz_u * 2 },
+		{ lerp(hubA_x, hubB_x, 0.56) - px_u * 6,  93, lerp(hubA_z, hubB_z, 0.56) - pz_u * 6 },
+		{ lerp(hubA_x, hubB_x, 0.82) + px_u * 2,  95, lerp(hubA_z, hubB_z, 0.82) + pz_u * 2 },
+		{ hubB_x + 14, 96, 24 },
+	},
+	{
+		{ hubA_x - 14, 90, 24 },
+		{ lerp(hubA_x, hubB_x, 0.20) + px_u * 30,  93, lerp(hubA_z, hubB_z, 0.20) + pz_u * 30 },
+		{ lerp(hubA_x, hubB_x, 0.46) + px_u * 44, 108, lerp(hubA_z, hubB_z, 0.46) + pz_u * 44 },
+		{ lerp(hubA_x, hubB_x, 0.70) + px_u * 36, 118, lerp(hubA_z, hubB_z, 0.70) + pz_u * 36 },
+		{ lerp(hubA_x, hubB_x, 0.88) + px_u * 14, 110, lerp(hubA_z, hubB_z, 0.88) + pz_u * 14 },
+		{ hubB_x + 18, 96 + 11, 24 },
+	},
+}
+for _, tpath in ipairs(tunnel_branches) do
+	for _, seg in ipairs({2, 3}) do
+		local x, y, z, px, pz = eval_spline_at(tpath, seg, 0.45)
+		local side = (seg == 2) and 3.4 or -3.4
+		add_spawn(x + px * side, z + pz * side, y - 3, y + 4, "tunnel")
+	end
+end
 
--- 			-- Steer toward chase target
--- 			local to_t = vector.subtract(chase_target, pos)
--- 			local desired_yaw = math.atan2(-to_t.x, to_t.z)
--- 			local yaw_err = (desired_yaw - self.yaw + math.pi) % (2 * math.pi) - math.pi
--- 			local max_turn = BIKE_TURN_RATE * sdt
--- 			self.yaw = self.yaw + back_tracks.clamp(yaw_err, -max_turn, max_turn)
+-----------------------------------------
+-- Mildly Seeking Enemy Projectile Entity
+-----------------------------------------
+core.register_entity(MODNAME .. ":enemy_bullet", {
+	initial_properties = {
+		visual = "cube",
+		visual_size = {x = 0.34, y = 0.34, z = 0.65},
+		textures = {
+			ENEMY_BULLET_TEX, ENEMY_BULLET_TEX, ENEMY_BULLET_TEX,
+			ENEMY_BULLET_TEX, ENEMY_BULLET_TEX, ENEMY_BULLET_TEX,
+		},
+		glow = 14,
+		physical = false,
+		pointable = false,
+		collide_with_objects = false,
+		static_save = false,
+	},
 
--- 			-- Smooth ground sampling at front & rear wheel hubs
--- 			local climb_boost = math.max(0.0, self.pitch) * 2.5 + math.max(0.0, self.vel.y) * 0.15
--- 			local step_up = 1.6 + math.min(climb_boost, 2.8)
--- 			local hub_f = vector.add(pos, vector.multiply(forward,  1.0))
--- 			local hub_r = vector.add(pos, vector.multiply(forward, -1.0))
--- 			local gf = back_tracks.sample_smooth_ground_y(hub_f.x, pos.y - 0.3, hub_f.z, step_up)
--- 			local gr = back_tracks.sample_smooth_ground_y(hub_r.x, pos.y - 0.3, hub_r.z, step_up)
+	on_activate = function(self)
+		self.dir = vector.new(0, 0, 1)
+		self.dist_traveled = 0
+		self.spawn_gen = back_tracks.turret_generation
+	end,
 
--- 			local grounded = false
--- 			local v_up = vector.dot(self.vel, up)
--- 			if gf or gr then
--- 				local g_mid = (gf and gr) and ((gf + gr) * 0.5) or (gf or gr)
--- 				local comp = BIKE_SUSP_REST - ((pos.y - 0.3) - g_mid)
--- 				if comp > 0 then
--- 					grounded = true
--- 					comp = math.min(comp, 1.6)
--- 					local f_susp = math.max(0.0, BIKE_SPRING_K * comp - BIKE_SPRING_DAMP * v_up)
--- 					self.vel = vector.add(self.vel, vector.multiply(up, f_susp * sdt))
--- 					if comp > 0.95 then
--- 						pos.y = pos.y + (comp - 0.95) * 0.45
--- 					end
--- 				end
--- 			end
+	on_step = function(self, dtime)
+		local dt = math.min(dtime, 0.1)
+		local pos = self.object:get_pos()
+		if not pos or not self.dir or self.spawn_gen ~= back_tracks.turret_generation then
+			self.object:remove()
+			return
+		end
 
--- 			self.vel.y = self.vel.y - BIKE_GRAVITY * sdt
+		-- Mildly steer toward the nearest visible player in front of the bullet
+		local best_d2 = TURRET_MAX_RANGE * TURRET_MAX_RANGE
+		local seek_dir = nil
+		for _, dstate in pairs(back_tracks.active_drivers) do
+			if dstate and dstate.hp > 0 and dstate.pos then
+				local tp = vector.new(dstate.pos.x, dstate.pos.y + 0.5, dstate.pos.z)
+				local to_p = vector.subtract(tp, pos)
+				local d2 = vector.dot(to_p, to_p)
+				if d2 > 1.0 and d2 < best_d2 then
+					local d = math.sqrt(d2)
+					local cand_dir = vector.multiply(to_p, 1.0 / d)
+					if vector.dot(cand_dir, self.dir) >= ENEMY_BULLET_SEEK_MIN_DOT and not raycast_solid(pos, tp) then
+						best_d2 = d2
+						seek_dir = cand_dir
+					end
+				end
+			end
+		end
 
--- 			if grounded then
--- 				-- Ramp launch deflection
--- 				if self.pitch > 0.06 and v_up < 0 then
--- 					local spd = vector.length(self.vel)
--- 					local tv = vector.multiply(forward, spd * 0.92)
--- 					if tv.y > self.vel.y then
--- 						self.vel = vector.add(self.vel, vector.multiply(vector.subtract(tv, self.vel), math.min(1, 18 * sdt)))
--- 					end
--- 				end
--- 				-- Drive forward + lateral grip
--- 				local v_fwd = vector.dot(self.vel, forward)
--- 				local accel = back_tracks.clamp((target_speed - v_fwd) * 3.0, -BIKE_ACCEL, BIKE_ACCEL)
--- 				self.vel = vector.add(self.vel, vector.multiply(forward, accel * sdt))
+		if seek_dir then
+			self.dir = steer_dir_toward(self.dir, seek_dir, ENEMY_BULLET_SEEK_RATE * dt)
+			self.object:set_rotation(vector.dir_to_rotation(self.dir))
+		end
 
--- 				local v_lat = vector.dot(self.vel, right)
--- 				self.vel = vector.subtract(self.vel, vector.multiply(right, v_lat * math.min(1, 10.0 * sdt)))
--- 			end
+		local step_dist = ENEMY_BULLET_SPEED * dt
+		local next_pos = vector.add(pos, vector.multiply(self.dir, step_dist))
 
--- 			-- Slope pitch & lean roll
--- 			local target_pitch = 0
--- 			if gf and gr then
--- 				target_pitch = back_tracks.clamp(math.atan2(gf - gr, 2.0), -0.75, 0.75)
--- 			end
--- 			self.pitch = self.pitch + (target_pitch - self.pitch) * math.min(1, (grounded and 16 or 1.5) * sdt)
--- 			local target_roll = back_tracks.clamp(-yaw_err * 0.65, -0.5, 0.5)
--- 			self.roll = self.roll + (target_roll - self.roll) * math.min(1, 10 * sdt)
+		-- Cannot shoot through the ground or walls
+		if raycast_solid(pos, next_pos) then
+			self.object:remove()
+			return
+		end
 
--- 			pos = vector.add(pos, vector.multiply(self.vel, sdt))
--- 			back_tracks.resolve_wall_collisions(pos, self.vel, forward, climb_boost)
--- 		end
+		-- Check hit against active driver trucks
+		local seg = vector.subtract(next_pos, pos)
+		local seg_len2 = vector.dot(seg, seg)
+		if seg_len2 > 1e-6 then
+			for name, dstate in pairs(back_tracks.active_drivers) do
+				if dstate and dstate.hp > 0 and dstate.pos then
+					local tp = dstate.pos
+					local t = clamp(vector.dot(vector.subtract(tp, pos), seg) / seg_len2, 0, 1)
+					local closest = vector.add(pos, vector.multiply(seg, t))
+					local d2 = vector.dot(vector.subtract(tp, closest), vector.subtract(tp, closest))
+					if d2 <= ENEMY_BULLET_HIT_R * ENEMY_BULLET_HIT_R then
+						back_tracks.damage_player(name, ENEMY_BULLET_DAMAGE)
+						core.add_particlespawner({
+							amount = 10,
+							time = 0.05,
+							minpos = vector.subtract(closest, vector.new(0.2, 0.2, 0.2)),
+							maxpos = vector.add(closest, vector.new(0.2, 0.2, 0.2)),
+							minvel = vector.new(-5, 1, -5),
+							maxvel = vector.new( 5, 6,  5),
+							minexptime = 0.15,
+							maxexptime = 0.35,
+							minsize = 2.0,
+							maxsize = 3.5,
+							glow = 14,
+							texture = ENEMY_BULLET_TEX,
+						})
+						self.object:remove()
+						return
+					end
+				end
+			end
+		end
 
--- 		self.object:set_pos(pos)
--- 		local _, up, forward = back_tracks.compute_basis(self.yaw, self.pitch, self.roll)
--- 		self.object:set_rotation(vector.dir_to_rotation(forward, up))
--- 		self.reg.pos = pos
+		self.dist_traveled = self.dist_traveled + step_dist
+		if self.dist_traveled >= ENEMY_BULLET_MAX_DIST then
+			self.object:remove()
+			return
+		end
 
--- 		-- Headlight beam ahead of bike
--- 		self.light_timer = self.light_timer + dt
--- 		if self.light_timer >= 0.10 then
--- 			self.light_timer = 0
--- 			local beam = {
--- 				vector.add(pos, vector.add(vector.multiply(forward, 5.0), vector.new(0, 0.8, 0))),
--- 			}
--- 			self.light_nodes = back_tracks.update_headlights(self.light_nodes, beam)
--- 		end
+		self.object:set_pos(next_pos)
+	end,
+})
 
--- 		-- Fire bullets at player
--- 		self.fire_timer = self.fire_timer - dt
--- 		if self.fire_timer <= 0 and dist_to_player < 68.0 then
--- 			self.fire_timer = BIKE_FIRE_INTERVAL + math.random() * 1.0
--- 			local muzzle = vector.add(pos, vector.new(0, 0.7, 0))
--- 			if not back_tracks.raycast_solid(muzzle, driver.pos) then
--- 				local lead_pos = vector.add(driver.pos, vector.multiply(driver.vel, dist_to_player / ENEMY_BULLET_SPEED * 0.5))
--- 				fire_enemy_bullet(muzzle, lead_pos, 0.08)
--- 			end
--- 		end
--- 	end,
--- })
+-----------------------------------------
+-- Ground Turret Entity
+-----------------------------------------
+local next_enemy_uid = 1
 
--- -----------------------------------------
--- -- 2. Starfox-Style Strafing Flyer Entity
--- -----------------------------------------
--- core.register_entity(MODNAME .. ":flyer", {
--- 	initial_properties = {
--- 		visual = "cube",
--- 		visual_size = {x = 2.4, y = 0.45, z = 1.6},
--- 		textures = {
--- 			FLYER_TEX_BODY, FLYER_TEX_BODY, FLYER_TEX_BODY,
--- 			FLYER_TEX_BODY, FLYER_TEX_BODY, FLYER_TEX_HEAD,
--- 		},
--- 		glow = 14,
--- 		physical = false,
--- 		pointable = false,
--- 		collide_with_objects = false,
--- 		static_save = false,
--- 	},
+core.register_entity(MODNAME .. ":ground_turret", {
+	initial_properties = {
+		visual = "cube",
+		visual_size = {x = 1.4, y = 1.8, z = 1.4},
+		textures = {
+			TURRET_TOP_TEX, TURRET_TEX, TURRET_TEX,
+			TURRET_TEX, TURRET_TEX, TURRET_TEX,
+		},
+		glow = 14,
+		physical = false,
+		pointable = false,
+		collide_with_objects = false,
+		static_save = false,
+	},
 
--- 	on_activate = function(self)
--- 		self.eid = alloc_enemy_id()
--- 		self.phase = math.random() * math.pi * 2
--- 		self.strafe_dir = (math.random() < 0.5) and 1 or -1
--- 		self.fire_timer = 0.8 + math.random() * 1.0
--- 		self.burst_left = 0
--- 		self.light_timer = 0
--- 		self.light_nodes = {}
--- 		self.target_name = nil
--- 		self.dead = false
+	on_activate = function(self)
+		self.uid = next_enemy_uid
+		next_enemy_uid = next_enemy_uid + 1
+		self.hp = TURRET_MAX_HP
+		self.fire_timer = math.random() * TURRET_FIRE_INTERVAL
+		self.los_timer = math.random() * TURRET_LOS_CHECK_INTERVAL
+		self.flash_timer = 0
+		self.cached_target = nil
+	end,
 
--- 		local ent_ref = {
--- 			obj = self.object,
--- 			kind = "flyer",
--- 			hit_radius = 2.2,
--- 			pos = self.object:get_pos(),
--- 			dead = false,
--- 			kill = function(killer_name)
--- 				if self.dead then return end
--- 				self.dead = true
--- 				back_tracks.clear_light_list(self.light_nodes)
--- 				self.light_nodes = {}
--- 				back_tracks.spawn_explosion(self.object:get_pos() or vector.zero(), 1.25)
--- 				if killer_name then back_tracks.register_kill(killer_name) end
--- 				back_tracks.enemies[self.eid] = nil
--- 				self.object:remove()
--- 			end,
--- 		}
--- 		self.reg = ent_ref
--- 		back_tracks.enemies[self.eid] = ent_ref
--- 	end,
+	on_deactivate = function(self, _removal)
+		if self.uid then
+			back_tracks.enemies[self.uid] = nil
+		end
+		if self.spawn_entry and self.spawn_entry.obj == self.object then
+			self.spawn_entry.obj = nil
+		end
+	end,
 
--- 	on_deactivate = function(self)
--- 		back_tracks.clear_light_list(self.light_nodes)
--- 		self.light_nodes = {}
--- 		if self.eid then
--- 			back_tracks.enemies[self.eid] = nil
--- 		end
--- 	end,
+	on_step = function(self, dtime)
+		local dt = math.min(dtime, 0.1)
+		local entry = self.registry_entry
+		if not entry or entry.dead then
+			self.object:remove()
+			return
+		end
 
--- 	on_step = function(self, dtime)
--- 		if self.dead then return end
--- 		local dt = math.min(dtime, 0.1)
--- 		local pos = self.object:get_pos()
--- 		if not pos then return end
+		if self.flash_timer > 0 then
+			self.flash_timer = self.flash_timer - dt
+			if self.flash_timer <= 0 then
+				self.object:set_texture_mod("")
+			end
+		end
 
--- 		local driver = self.target_name and back_tracks.active_drivers[self.target_name]
--- 		if not driver then
--- 			back_tracks.clear_light_list(self.light_nodes)
--- 			back_tracks.enemies[self.eid] = nil
--- 			self.object:remove()
--- 			return
--- 		end
+		local pos = self.object:get_pos()
+		if not pos then return end
+		entry.pos = pos
 
--- 		local dist = vector.distance(pos, driver.pos)
--- 		if dist > FLYER_DESPAWN_DIST then
--- 			back_tracks.clear_light_list(self.light_nodes)
--- 			back_tracks.enemies[self.eid] = nil
--- 			self.object:remove()
--- 			return
--- 		end
+		local muzzle = vector.new(pos.x, pos.y + TURRET_MUZZLE_Y, pos.z)
 
--- 		self.phase = self.phase + dt * 2.1
+		-- Rate-limit raycast line-of-sight checks
+		self.los_timer = self.los_timer - dt
+		if self.los_timer <= 0 then
+			self.los_timer = TURRET_LOS_CHECK_INTERVAL
+			local best_dist2 = TURRET_MAX_RANGE * TURRET_MAX_RANGE
+			local best_target = nil
 
--- 		-- Starfox-style sweeping strafe target ahead of player
--- 		local _, _, p_fwd = back_tracks.compute_basis(driver.yaw, 0, 0)
--- 		local p_right = vector.new(p_fwd.z, 0, -p_fwd.x)
--- 		local lat_wave = math.sin(self.phase * self.strafe_dir) * 20.0
--- 		local vert_wave = math.cos(self.phase * 1.35) * 4.5
+			for _, dstate in pairs(back_tracks.active_drivers) do
+				if dstate and dstate.hp > 0 and dstate.pos then
+					local tp = vector.new(dstate.pos.x, dstate.pos.y + 0.6, dstate.pos.z)
+					local diff = vector.subtract(tp, muzzle)
+					local d2 = vector.dot(diff, diff)
+					if d2 <= best_dist2 and d2 > 1.0 then
+						if not raycast_solid(muzzle, tp) then
+							best_dist2 = d2
+							best_target = tp
+						end
+					end
+				end
+			end
+			self.cached_target = best_target
+		end
 
--- 		local anchor = vector.add(driver.pos, vector.multiply(p_fwd, 30.0))
--- 		local desired_pos = vector.add(anchor, vector.add(
--- 			vector.multiply(p_right, lat_wave),
--- 			vector.new(0, 11.0 + vert_wave, 0)
--- 		))
+		local target = self.cached_target
+		if target then
+			local dir = vector.direction(muzzle, target)
+			self.object:set_yaw(math.atan2(-dir.x, dir.z))
 
--- 		-- Terrain clearance safety so flyers pull up over canyon walls / ramps
--- 		local ground_below = back_tracks.sample_smooth_ground_y(pos.x, pos.y - 2, pos.z, 6.0)
--- 		if ground_below and desired_pos.y < ground_below + 7.0 then
--- 			desired_pos.y = ground_below + 7.0
--- 		end
+			self.fire_timer = self.fire_timer - dt
+			if self.fire_timer <= 0 then
+				self.fire_timer = TURRET_FIRE_INTERVAL
+				if not raycast_solid(muzzle, target) then
+					local bullet_spawn = vector.add(muzzle, vector.multiply(dir, 1.1))
+					local b = core.add_entity(bullet_spawn, MODNAME .. ":enemy_bullet")
+					if b then
+						local bent = b:get_luaentity()
+						bent.dir = dir
+						bent.dist_traveled = 0
+						bent.spawn_gen = back_tracks.turret_generation
+						b:set_rotation(vector.dir_to_rotation(dir))
+					end
+				end
+			end
+		else
+			self.fire_timer = math.max(0.25, self.fire_timer - dt)
+		end
+	end,
+})
 
--- 		local to_desired = vector.subtract(desired_pos, pos)
--- 		local d_len = vector.length(to_desired)
--- 		local move_dir = (d_len > 0.5) and vector.divide(to_desired, d_len) or p_fwd
--- 		local speed = math.min(FLYER_BASE_SPEED + math.max(0, d_len - 10) * 1.4, 78.0)
+-----------------------------------------
+-- Surface Snapping & Dynamic Spawner
+-----------------------------------------
+local function find_surface_in_column(x, z, y_min, y_max)
+	local top_node = core.get_node_or_nil({x = x, y = y_max + 2, z = z})
+	local bot_node = core.get_node_or_nil({x = x, y = y_min, z = z})
+	if not top_node or top_node.name == "ignore" or not bot_node or bot_node.name == "ignore" then
+		return nil
+	end
 
--- 		local next_pos = vector.add(pos, vector.multiply(move_dir, speed * dt))
--- 		if not back_tracks.is_node_solid(next_pos) then
--- 			pos = next_pos
--- 		else
--- 			pos.y = pos.y + 8.0 * dt
--- 		end
--- 		self.object:set_pos(pos)
+	local p = {x = x, y = 0, z = z}
+	local above = {x = x, y = 0, z = z}
+	for y = y_max, y_min, -1 do
+		p.y = y
+		above.y = y + 1
+		if is_node_solid(p) and not is_node_solid(above) then
+			above.y = y + 2
+			if not is_node_solid(above) then
+				return y + 0.5 + TURRET_HALF_H
+			end
+		end
+	end
+	return nil
+end
 
--- 		-- Bank dramatically into the strafe while facing toward player/flight path
--- 		local look_dir = vector.normalize(vector.subtract(driver.pos, pos))
--- 		local roll = back_tracks.clamp(-math.cos(self.phase) * 0.65 * self.strafe_dir, -0.7, 0.7)
--- 		local r_vec = vector.cross(vector.new(0, 1, 0), look_dir)
--- 		if vector.length(r_vec) > 0.01 then
--- 			r_vec = vector.normalize(r_vec)
--- 			local u_vec = vector.normalize(vector.cross(look_dir, r_vec))
--- 			local banked_up = vector.add(
--- 				vector.multiply(u_vec, math.cos(roll)),
--- 				vector.multiply(r_vec, math.sin(roll))
--- 			)
--- 			self.object:set_rotation(vector.dir_to_rotation(look_dir, banked_up))
--- 		end
--- 		self.reg.pos = pos
+local function spawn_turret(spawn)
+	local sy = find_surface_in_column(spawn.x, spawn.z, spawn.y_min, spawn.y_max)
+	if not sy then return false end
 
--- 		-- Searchlight headlight projecting toward player/ground
--- 		self.light_timer = self.light_timer + dt
--- 		if self.light_timer >= 0.12 then
--- 			self.light_timer = 0
--- 			local spot = vector.add(pos, vector.multiply(look_dir, 6.0))
--- 			spot.y = spot.y - 2.0
--- 			self.light_nodes = back_tracks.update_headlights(self.light_nodes, {spot})
--- 		end
+	local pos = vector.new(spawn.x, sy, spawn.z)
+	local obj = core.add_entity(pos, MODNAME .. ":ground_turret")
+	if not obj then return false end
 
--- 		-- Burst plasma fire during strafe pass
--- 		self.fire_timer = self.fire_timer - dt
--- 		if self.fire_timer <= 0 and dist < 80.0 then
--- 			if self.burst_left <= 0 then
--- 				self.burst_left = 2
--- 			end
--- 			local muzzle = vector.add(pos, vector.multiply(look_dir, 1.8))
--- 			if not back_tracks.raycast_solid(muzzle, driver.pos) then
--- 				local lead = vector.add(driver.pos, vector.multiply(driver.vel, dist / ENEMY_BULLET_SPEED * 0.35))
--- 				fire_enemy_bullet(muzzle, lead, 0.06)
--- 			end
--- 			self.burst_left = self.burst_left - 1
--- 			if self.burst_left > 0 then
--- 				self.fire_timer = 0.22
--- 			else
--- 				self.fire_timer = FLYER_FIRE_INTERVAL + math.random() * 1.0
--- 			end
--- 		end
--- 	end,
--- })
+	local ent = obj:get_luaentity()
+	ent.spawn_entry = spawn
+	spawn.obj = obj
 
--- -----------------------------------------
--- -- Enemy Wave Spawner Loop
--- -----------------------------------------
--- local spawn_timer = 0
+	local reg = {
+		obj = obj,
+		pos = pos,
+		dead = false,
+		hit_radius = TURRET_HIT_RADIUS,
+		damage = function(amount, killer_name)
+			if ent.hp <= 0 then return end
+			ent.hp = ent.hp - amount
+			if ent.hp <= 0 then
+				spawn.dead = true
+				back_tracks.enemies[ent.uid].dead = true
+				back_tracks.spawn_explosion(pos, 1.3)
+				if killer_name then
+					back_tracks.register_kill(killer_name)
+				end
+				obj:remove()
+			else
+				ent.flash_timer = 0.08
+				obj:set_texture_mod("^[brighten")
+			end
+		end,
+		kill = function(killer_name)
+			spawn.dead = true
+			back_tracks.enemies[ent.uid].dead = true
+			back_tracks.spawn_explosion(pos, 1.3)
+			if killer_name then
+				back_tracks.register_kill(killer_name)
+			end
+			obj:remove()
+		end,
+	}
+	ent.registry_entry = reg
+	back_tracks.enemies[ent.uid] = reg
+	return true
+end
 
--- local function count_player_enemies(name)
--- 	local bikes, flyers = 0, 0
--- 	for _, e in pairs(back_tracks.enemies) do
--- 		if not e.dead and e.obj and e.obj:is_valid() then
--- 			local lua = e.obj:get_luaentity()
--- 			if lua and lua.target_name == name then
--- 				if e.kind == "bike" then
--- 					bikes = bikes + 1
--- 				elseif e.kind == "flyer" then
--- 					flyers = flyers + 1
--- 				end
--- 			end
--- 		end
--- 	end
--- 	return bikes, flyers
--- end
+local spawn_scan_timer = 0
+local SPAWN_SCAN_INTERVAL = 0.25
+local SPAWN_RADIUS_2 = TURRET_SPAWN_RADIUS * TURRET_SPAWN_RADIUS
 
--- local function try_spawn_bike(name, driver)
--- 	local _, _, p_fwd = back_tracks.compute_basis(driver.yaw, 0, 0)
--- 	local p_right = vector.new(p_fwd.z, 0, -p_fwd.x)
+function back_tracks.respawn_all_turrets()
+	back_tracks.turret_generation = back_tracks.turret_generation + 1
+	for i = 1, #TURRET_SPAWNS do
+		local s = TURRET_SPAWNS[i]
+		s.dead = false
+		if s.obj and s.obj:is_valid() then
+			local ent = s.obj:get_luaentity()
+			if ent then
+				ent.hp = TURRET_MAX_HP
+				ent.flash_timer = 0
+				ent.fire_timer = 0.4 + math.random() * TURRET_FIRE_INTERVAL
+				ent.cached_target = nil
+				if ent.registry_entry then
+					ent.registry_entry.dead = false
+				end
+			end
+			s.obj:set_texture_mod("")
+		end
+	end
+	spawn_scan_timer = SPAWN_SCAN_INTERVAL
+end
 
--- 	-- Spawn behind the player along the track so they ride up & chase
--- 	for _ = 1, 5 do
--- 		local back_dist = 24 + math.random() * 20
--- 		local side_off = (math.random() - 0.5) * 14
--- 		local cand_x = driver.pos.x - p_fwd.x * back_dist + p_right.x * side_off
--- 		local cand_z = driver.pos.z - p_fwd.z * back_dist + p_right.z * side_off
--- 		local sy = find_surface_y_near(cand_x, driver.pos.y, cand_z)
--- 		if sy then
--- 			local bike = core.add_entity({x = cand_x, y = sy, z = cand_z}, MODNAME .. ":dirt_bike")
--- 			if bike then
--- 				local ent = bike:get_luaentity()
--- 				ent.target_name = name
--- 				ent.yaw = driver.yaw
--- 				ent.vel = vector.multiply(p_fwd, 35.0)
--- 				return true
--- 			end
--- 		end
--- 	end
--- 	return false
--- end
+core.register_globalstep(function(dtime)
+	spawn_scan_timer = spawn_scan_timer + dtime
+	if spawn_scan_timer < SPAWN_SCAN_INTERVAL then return end
+	spawn_scan_timer = 0
 
--- local function try_spawn_flyer(name, driver)
--- 	local _, _, p_fwd = back_tracks.compute_basis(driver.yaw, 0, 0)
--- 	local p_right = vector.new(p_fwd.z, 0, -p_fwd.x)
--- 	local ahead = 42 + math.random() * 20
--- 	local side = (math.random() - 0.5) * 32
--- 	local sp = {
--- 		x = driver.pos.x + p_fwd.x * ahead + p_right.x * side,
--- 		y = driver.pos.y + 12 + math.random() * 8,
--- 		z = driver.pos.z + p_fwd.z * ahead + p_right.z * side,
--- 	}
--- 	if not back_tracks.is_node_solid(sp) then
--- 		local flyer = core.add_entity(sp, MODNAME .. ":flyer")
--- 		if flyer then
--- 			flyer:get_luaentity().target_name = name
--- 			return true
--- 		end
--- 	end
--- 	return false
--- end
+	if not next(back_tracks.active_drivers) then return end
 
--- core.register_globalstep(function(dtime)
--- 	spawn_timer = spawn_timer + math.min(dtime, 0.1)
--- 	if spawn_timer < 1.5 then return end
--- 	spawn_timer = 0
-
--- 	for name, driver in pairs(back_tracks.active_drivers) do
--- 		if driver.ground_ready then
--- 			local bikes, flyers = count_player_enemies(name)
--- 			if bikes < TARGET_BIKES_PER_PLAYER then
--- 				try_spawn_bike(name, driver)
--- 			end
--- 			local flyer_cap = is_in_flyer_zone(driver.pos) and TARGET_FLYERS_IN_ZONE or 1
--- 			if flyers < flyer_cap then
--- 				try_spawn_flyer(name, driver)
--- 			end
--- 		end
--- 	end
--- end)
+	for i = 1, #TURRET_SPAWNS do
+		local s = TURRET_SPAWNS[i]
+		if not s.dead and (not s.obj or not s.obj:is_valid()) then
+			for _, dstate in pairs(back_tracks.active_drivers) do
+				if dstate and dstate.pos then
+					local dx = dstate.pos.x - s.x
+					local dz = dstate.pos.z - s.z
+					if dx * dx + dz * dz <= SPAWN_RADIUS_2 then
+						spawn_turret(s)
+						break
+					end
+				end
+			end
+		end
+	end
+end)

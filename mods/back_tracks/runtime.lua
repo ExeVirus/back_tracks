@@ -3,17 +3,89 @@ local MODNAME = core.get_current_modname()
 -----------------------------------------
 -- Configuration & Tuning Constants
 -----------------------------------------
-local SHOW_PLACEHOLDER_MODEL = true
+local TRUCK_MESH = "monster_truck.gltf"
+local TRUCK_TEXTURE = "monster_truck.png"
+local TRUCK_MODEL_Y_OFFSET = -1.25 -- Offsets tire bottom (Y=0) down to ground below chassis center
+local TRUCK_MODEL_FLIP_FWD = false -- Set true if the model faces backwards when driving
 
 local START_POS = {x = 26, y = 12.0, z = 0}
 local START_YAW = math.pi / 2 -- Faces -X down the Start Pad
 
 -- Wheelbase & Visual Offsets
-local WHEEL_HALF_X = 1.5
-local WHEEL_HALF_Z = 1.5
+local WHEEL_HALF_X = 1.05
+local WHEEL_HALF_Z = 1.25
 local WHEEL_HUB_Y = -0.35
-local TURRET_HEIGHT_OFFSET = 0.72
-local CAMERA_EYE_OFFSET = {x = 0, y = 3.2, z = -5}
+local CAMERA_ATTACH_OFFSET = {x = 0, y = 26, z = -18} -- 10x model units: 2.6 up, 1.8 back
+local CAMERA_EYE_OFFSET = {x = 0, y = 7.0, z = -5}    -- Engine clamps thirdperson_back z to [-5, 5], y to [-10, 15]
+
+-- Front Bumper Aim & Slewing Reticle Tuning
+local BUMPER_FWD_OFFSET = 1.95
+local BUMPER_UP_OFFSET = 0.45
+local AIM_SLEW_RATE = math.rad(360) -- 180 degrees in 0.5 seconds
+local AIM_MAX_PITCH = math.rad(80)  -- +/- 80 degrees vertical aim cap (360 azimuth)
+local CAMERA_FOV_DEG = 72.0         -- Matches Luanti default vertical FOV for screen projection
+
+-- Checkpoints (Edit pos / yaw / boundary plane_normal here)
+-- Triggers when dot(player_pos - cp.pos, cp.plane_normal) >= 0 within max_dist & [y_min, y_max]
+local CHECKPOINTS = {
+	{
+		name = "Ramps",
+		pos = {x = -300, y = 12.0, z = 0},
+		yaw = math.pi / 2,
+		plane_normal = {x = -1, y = 0, z = 0},
+		max_dist = 85,
+		y_min = -5, y_max = 60,
+	},
+	{
+		name = "Causeway",
+		pos = {x = -642, y = 13.5, z = 0},
+		yaw = math.pi / 2,
+		plane_normal = {x = -1, y = 0, z = 0},
+		max_dist = 75,
+		y_min = -5, y_max = 65,
+	},
+	{
+		name = "Mountain",
+		pos = {x = -946, y = 13.5, z = 0},
+		yaw = math.pi / 2,
+		plane_normal = {x = -1, y = 0, z = 0},
+		max_dist = 95,
+		y_min = -5, y_max = 75,
+	},
+	{
+		name = "Tunnel",
+		pos = {x = -1034, y = 91.5, z = 27},
+		yaw = math.atan2(10, 3),
+		plane_normal = {x = -0.97, y = 0, z = 0.24},
+		max_dist = 26,
+		y_min = 74, y_max = 115,
+	},
+	{
+		name = "Exit",
+		pos = {x = -1258, y = 97.5, z = 25},
+		yaw = math.atan2(11.7, -25),
+		plane_normal = {x = -0.80, y = 0, z = -0.60},
+		max_dist = 26,
+		y_min = 82, y_max = 125,
+	},
+	{
+		name = "Mesa",
+		pos = {x = -1201, y = 182.0, z = -33},
+		yaw = math.atan2(-56, 33),
+		plane_normal = {x = 0.98, y = 0, z = -0.20},
+		max_dist = 36,
+		y_min = 165, y_max = 210,
+	},
+}
+
+-- Truck Animation Tuning
+local WHEEL_BONES = { "wheel_fl", "wheel_fr", "wheel_rl", "wheel_rr" }
+local IDLE_SPEED_THRESHOLD = 0.45     -- World units/sec below which truck counts as stopped
+local DRIVE_ANIM_SPEED_SCALE = 0.19   -- Scales drive animation speed to world speed (1:1 tire roll)
+local DRIVE_ANIM_MAX_SPEED = 9.0      -- Caps animation multiplier at top/nitro speed
+local DRIVE_STALL_SPIN_SPEED = 0.75   -- Wheel spin speed if holding throttle while blocked at 0 speed
+local AIR_WHEEL_SPIN_SPEED = 14.0     -- Wheel spin rate (rad/s) when holding W/S in mid-air
+local AIR_ANIM_GRACE = 0.12           -- Seconds airborne before switching to air wheel-spin mode
 
 local WHEEL_OFFSETS = {
 	{x = -WHEEL_HALF_X, y = WHEEL_HUB_Y, z =  WHEEL_HALF_Z}, -- Front Left
@@ -22,25 +94,25 @@ local WHEEL_OFFSETS = {
 	{x =  WHEEL_HALF_X, y = WHEEL_HUB_Y, z = -WHEEL_HALF_Z}, -- Rear Right
 }
 
--- 3D Chassis Collision Hull (tucked inside tire envelope so tires climb first)
+-- 3D Chassis Collision Hull (tucked inside tire envelope, roof spheres reach cab top)
 local CHASSIS_SPHERES = {
-	-- Lower skid-plate / chassis corners (reaches x=±1.07, z=±1.37, bottom=-0.07)
-	{x = -0.65, y = 0.35, z =  0.95, r = 0.42},
-	{x =  0.65, y = 0.35, z =  0.95, r = 0.42},
-	{x = -0.65, y = 0.35, z = -0.95, r = 0.42},
-	{x =  0.65, y = 0.35, z = -0.95, r = 0.42},
-	-- Upper cab / roof / turret guard corners (top=+1.02)
-	{x = -0.72, y = 0.62, z =  0.85, r = 0.40},
-	{x =  0.72, y = 0.62, z =  0.85, r = 0.40},
-	{x = -0.72, y = 0.62, z = -0.85, r = 0.40},
-	{x =  0.72, y = 0.62, z = -0.85, r = 0.40},
+	-- Lower skid-plate / chassis corners
+	{x = -0.52, y = 0.35, z =  0.85, r = 0.40},
+	{x =  0.52, y = 0.35, z =  0.85, r = 0.40},
+	{x = -0.52, y = 0.35, z = -0.85, r = 0.40},
+	{x =  0.52, y = 0.35, z = -0.85, r = 0.40},
+	-- Upper cab roof corners (reaches y = +1.67 above chassis center, matching ~2.94 truck height)
+	{x = -0.42, y = 1.25, z =  0.38, r = 0.42},
+	{x =  0.42, y = 1.25, z =  0.38, r = 0.42},
+	{x = -0.42, y = 1.25, z = -0.38, r = 0.42},
+	{x =  0.42, y = 1.25, z = -0.38, r = 0.42},
 }
 
 -- 3D Suspension, Gravity & Surface Smoothing
 local SUSPENSION_REST = 1.20
 local MAX_COMP = 1.35
 local SPRING_K = 15.5
-local SPRING_DAMP = 5.2
+local SPRING_DAMP = 6.8
 local GRAVITY = 15.0
 
 local PROGRESSIVE_COMP_START = 0.48
@@ -55,22 +127,22 @@ local WHEEL_PROBE_DOWN = 1.35
 local WHEEL_SMOOTH_SPAN = 0.72
 local WHEEL_SMOOTH_WEIGHT = 0.55
 
--- Rigid-Body Inertia & Chassis Collision Response
-local I_PITCH = 2.25
-local I_YAW   = 2.65
-local I_ROLL  = 2.35
+-- Rigid-Body Inertia & Chassis Collision Response (decreased inertia for faster pitch/turn response)
+local I_PITCH = 1.40
+local I_YAW   = 1.60
+local I_ROLL  = 1.40
 
 local AIR_LIN_DRAG = 0.04
 local AIR_ANG_DAMP = 0.35
-local GROUND_ANG_DAMP = 1.65
+local GROUND_ANG_DAMP = 2.40
 
 local WALL_BOUNCE_THRESHOLD = -8.0 -- Only bounce on real impacts, not curved-wall scrapes
 local WALL_RESTITUTION = 0.24
-local WALL_FRICTION_SIDE = 0.04
-local SKID_PLATE_FRICTION = 0.02
-local ROOF_FRICTION_FLIP = 0.52
+local WALL_FRICTION_SIDE = 0.06
+local SKID_PLATE_FRICTION = 0.03
+local ROOF_FRICTION_FLIP = 0.65
 
--- Driving, Weighty Steering, Compressible Grip & Nitro
+-- Driving, Weighty Steering, Top-Heavy Grip & Nitro
 local MAX_DISP_PER_STEP = 0.28
 local MAX_SUB_STEPS = 24
 local WORLD_TOP_SPEED = 50.0
@@ -88,19 +160,20 @@ local REVERSE_ACCEL = 7.0
 local BRAKE_ACCEL = 25.0
 local NITRO_ACCEL = 25.0
 
-local WHEELBASE_STEER = 3.5
+local WHEELBASE_STEER = 3.2
 local MAX_STEER_ANGLE = 0.42
-local STEER_INPUT_SPEED = 3.2
-local STEER_YAW_RESPONSE = 9.5
-local LATERAL_GRIP = 10.5
-local TIRE_MAX_LAT_ACCEL = 26.0
-local TIRE_ROLL_ARM = 0.11
-local ROLLING_DRAG = 0.14
+local STEER_INPUT_SPEED = 4.2
+local STEER_YAW_RESPONSE = 13.0
+local LATERAL_GRIP = 14.5
+local TIRE_MAX_LAT_ACCEL = 25.0
+local TIRE_ROLL_ARM = 0.42         -- Balanced for higher lateral accel + lower roll inertia
+local ROLLING_DRAG = 0.28          -- Viscous rolling resistance
+local COAST_ROLL_FRICTION = 1.45   -- Constant rolling/engine drag when off-throttle (stops halfpipe wobble)
 local OVERSPEED_DRAG = 1.4
 
 -- Self-Righting Recovery (when flipped upside-down)
 local FLIP_COOLDOWN = 0.75
-local ROCK_TORQUE_RATE = 3.6
+local ROCK_TORQUE_RATE = 3.8
 
 -- Health & Damage
 local HEALTH_MAX = 100.0
@@ -109,11 +182,10 @@ local HEALTH_RECHARGE_DELAY = 2.5
 local LAVA_DPS = 30.0
 
 -- Weapons
-local BULLET_SPEED = 120.0
-local BULLET_MAX_DIST = 100.0
+local BULLET_SPEED = 150.0
+local BULLET_MAX_DIST = 220.0
 local BULLET_COOLDOWN = 0.12
-local MUZZLE_HEIGHT_OFFSET = 1.35
-local MUZZLE_FORWARD_OFFSET = 1.8
+local BULLET_DAMAGE = 10
 local BULLET_TEX = "[fill:16x16:#FFFFFF^[colorize:#FF2200:255"
 
 -- HUD Bar Config
@@ -124,6 +196,45 @@ local HUD_BAR_H = 12
 local active_drivers = {}
 back_tracks.active_drivers = active_drivers
 back_tracks.enemies = back_tracks.enemies or {}
+back_tracks.CHECKPOINTS = CHECKPOINTS
+
+-----------------------------------------
+-- Procedurally Built Reticle Texture
+-----------------------------------------
+local function build_reticle_texture()
+	if not (core.encode_png and core.encode_base64) then
+		return "[fill:16x16:#00FF88"
+	end
+	local size = 25
+	local mid = 13
+	local data = {}
+	local idx = 1
+	for y = 1, size do
+		for x = 1, size do
+			local dx = x - mid
+			local dy = y - mid
+			local adx = math.abs(dx)
+			local ady = math.abs(dy)
+			local r2 = dx * dx + dy * dy
+			local col = "#00000000"
+
+			if adx <= 1 and ady <= 1 then
+				col = (adx == 0 and ady == 0) and "#FFFFFFFF" or "#002211CC"
+			elseif (adx == 0 and ady >= 4 and ady <= 10) or (ady == 0 and adx >= 4 and adx <= 10) then
+				col = "#00FF88FF"
+			elseif (adx == 1 and ady >= 4 and ady <= 10) or (ady == 1 and adx >= 4 and adx <= 10) then
+				col = "#002211AA"
+			elseif r2 >= 72 and r2 <= 96 and (adx >= 4 and ady >= 4) then
+				col = "#00FF88AA"
+			end
+			data[idx] = col
+			idx = idx + 1
+		end
+	end
+	return "[png:" .. core.encode_base64(core.encode_png(size, size, data))
+end
+
+local RETICLE_TEX = build_reticle_texture()
 
 -----------------------------------------
 -- Math & World Helpers
@@ -691,12 +802,12 @@ function back_tracks.register_kill(name)
 end
 
 -----------------------------------------
--- Player Bullet Entity
+-- Player Bullet Entity (Front Bumper)
 -----------------------------------------
 core.register_entity(MODNAME .. ":bullet", {
 	initial_properties = {
 		visual = "cube",
-		visual_size = {x = 0.18, y = 0.18, z = 0.55},
+		visual_size = {x = 0.16, y = 0.16, z = 0.50},
 		textures = {
 			BULLET_TEX, BULLET_TEX, BULLET_TEX,
 			BULLET_TEX, BULLET_TEX, BULLET_TEX,
@@ -737,7 +848,9 @@ core.register_entity(MODNAME .. ":bullet", {
 						local d2 = vector.dot(vector.subtract(ep, closest), vector.subtract(ep, closest))
 						local hit_r = enemy.hit_radius or 2.0
 						if d2 <= hit_r * hit_r then
-							if enemy.kill then
+							if enemy.damage then
+								enemy.damage(BULLET_DAMAGE, self.owner_name)
+							elseif enemy.kill then
 								enemy.kill(self.owner_name)
 							else
 								enemy.dead = true
@@ -767,25 +880,68 @@ core.register_entity(MODNAME .. ":bullet", {
 	end,
 })
 
-local function fire_bullet(player, truck_pos, truck_up)
-	local look_dir = vector.normalize(player:get_look_dir())
-	local eye_pos = vector.add(truck_pos, vector.multiply(truck_up, MUZZLE_HEIGHT_OFFSET))
-	local muzzle_pos = vector.add(eye_pos, vector.multiply(look_dir, MUZZLE_FORWARD_OFFSET))
-
-	local aim_target = vector.add(eye_pos, vector.multiply(look_dir, BULLET_MAX_DIST))
-	local hit = raycast_solid(eye_pos, aim_target)
-	if hit and hit.intersection_point then
-		aim_target = hit.intersection_point
+local function fire_bullet(player, state)
+	local aim_dir = state.aim_dir
+	local bumper_pos = vector.add(state.pos, vector.add(
+		vector.multiply(state.forward, BUMPER_FWD_OFFSET),
+		vector.multiply(state.up, BUMPER_UP_OFFSET)
+	))
+	if is_node_solid(vector.round(bumper_pos)) then
+		bumper_pos = vector.add(state.pos, vector.multiply(state.up, 0.85))
 	end
 
-	local bullet_dir = vector.subtract(aim_target, muzzle_pos)
+	-- Converge from camera/roof aim ray onto solid node or enemy under reticle
+	local aim_origin = vector.add(state.pos, vector.multiply(state.up, 2.5))
+	local aim_target = vector.add(aim_origin, vector.multiply(aim_dir, BULLET_MAX_DIST))
+	local best_dist2 = BULLET_MAX_DIST * BULLET_MAX_DIST
+
+	local hit = raycast_solid(aim_origin, aim_target)
+	if hit and hit.intersection_point then
+		local d2 = vector.dot(
+			vector.subtract(hit.intersection_point, bumper_pos),
+			vector.subtract(hit.intersection_point, bumper_pos)
+		)
+		if d2 > 9.0 then
+			aim_target = hit.intersection_point
+			best_dist2 = vector.dot(
+				vector.subtract(aim_target, aim_origin),
+				vector.subtract(aim_target, aim_origin)
+			)
+		end
+	end
+
+	local aim_seg = vector.subtract(aim_target, aim_origin)
+	local aim_len2 = vector.dot(aim_seg, aim_seg)
+	if aim_len2 > 1e-4 then
+		for _, enemy in pairs(back_tracks.enemies) do
+			if enemy.obj and enemy.obj:is_valid() and not enemy.dead then
+				local ep = enemy.pos or enemy.obj:get_pos()
+				if ep then
+					local t = clamp(vector.dot(vector.subtract(ep, aim_origin), aim_seg) / aim_len2, 0, 1)
+					local closest = vector.add(aim_origin, vector.multiply(aim_seg, t))
+					local r = (enemy.hit_radius or 2.0) + 0.4
+					local perp2 = vector.dot(vector.subtract(ep, closest), vector.subtract(ep, closest))
+					local along2 = t * t * aim_len2
+					if perp2 <= r * r and along2 < best_dist2 and along2 > 9.0 then
+						best_dist2 = along2
+						aim_target = ep
+					end
+				end
+			end
+		end
+	end
+
+	local bullet_dir = vector.subtract(aim_target, bumper_pos)
 	if vector.length(bullet_dir) < 0.1 then
-		bullet_dir = look_dir
+		bullet_dir = aim_dir
 	else
 		bullet_dir = vector.normalize(bullet_dir)
+		if vector.dot(bullet_dir, aim_dir) < 0.5 then
+			bullet_dir = aim_dir
+		end
 	end
 
-	local bullet = core.add_entity(muzzle_pos, MODNAME .. ":bullet")
+	local bullet = core.add_entity(bumper_pos, MODNAME .. ":bullet")
 	if bullet then
 		local ent = bullet:get_luaentity()
 		ent.dir = bullet_dir
@@ -796,18 +952,113 @@ local function fire_bullet(player, truck_pos, truck_up)
 end
 
 -----------------------------------------
--- Monster Truck & Turret Entities
+-- Slewing Aim & Screen-Space Reticle
 -----------------------------------------
-core.register_entity(MODNAME .. ":turret", {
+local function clamp_pitch_dir(dir, max_pitch)
+	local p = math.asin(clamp(dir.y, -1.0, 1.0))
+	if math.abs(p) <= max_pitch then
+		return dir
+	end
+	p = clamp(p, -max_pitch, max_pitch)
+	local h2 = dir.x * dir.x + dir.z * dir.z
+	if h2 < 1e-8 then
+		return vector.new(0, math.sin(p), math.cos(p))
+	end
+	local h = math.sqrt(h2)
+	local cp = math.cos(p)
+	return vector.new((dir.x / h) * cp, math.sin(p), (dir.z / h) * cp)
+end
+
+local function step_aim_reticle(name, player, state, dt)
+	local look_dir = vector.normalize(player:get_look_dir())
+	local target_pitch = clamp(math.asin(clamp(look_dir.y, -1.0, 1.0)), -AIM_MAX_PITCH, AIM_MAX_PITCH)
+
+	local hx, hz = look_dir.x, look_dir.z
+	local h_len = math.sqrt(hx * hx + hz * hz)
+	local target_dir
+	if h_len > 1e-4 then
+		local cp = math.cos(target_pitch)
+		target_dir = vector.new((hx / h_len) * cp, math.sin(target_pitch), (hz / h_len) * cp)
+	else
+		local cur = state.aim_dir
+		local ch = math.sqrt(cur.x * cur.x + cur.z * cur.z)
+		local cx = (ch > 1e-4) and (cur.x / ch) or 0
+		local cz = (ch > 1e-4) and (cur.z / ch) or 1
+		local cp = math.cos(target_pitch)
+		target_dir = vector.new(cx * cp, math.sin(target_pitch), cz * cp)
+	end
+
+	local aim_dir = state.aim_dir
+	local ang = math.acos(clamp(vector.dot(aim_dir, target_dir), -1.0, 1.0))
+	if ang > 1e-4 then
+		local step_ang = math.min(ang, AIM_SLEW_RATE * dt)
+		local axis = vector.cross(aim_dir, target_dir)
+		local axis_len = vector.length(axis)
+		if axis_len > 1e-5 then
+			axis = vector.multiply(axis, 1.0 / axis_len)
+		else
+			axis = vector.new(-aim_dir.z, 0, aim_dir.x)
+			if vector.length(axis) < 1e-4 then
+				axis = vector.new(1, 0, 0)
+			else
+				axis = vector.normalize(axis)
+			end
+		end
+		aim_dir = vector.normalize(rotate_vec_axis_angle(aim_dir, axis, step_ang))
+		aim_dir = clamp_pitch_dir(aim_dir, AIM_MAX_PITCH)
+		state.aim_dir = aim_dir
+	end
+
+	-- Project state.aim_dir into screen space for the HUD reticle
+	local cam_fwd = look_dir
+	local cam_right = vector.cross(vector.new(0, 1, 0), cam_fwd)
+	if vector.length(cam_right) < 1e-4 then
+		cam_right = vector.new(1, 0, 0)
+	else
+		cam_right = vector.normalize(cam_right)
+	end
+	local cam_up = vector.normalize(vector.cross(cam_fwd, cam_right))
+
+	local dx = vector.dot(state.aim_dir, cam_right)
+	local dy = vector.dot(state.aim_dir, cam_up)
+	local dz = vector.dot(state.aim_dir, cam_fwd)
+
+	local win = core.get_player_window_information and core.get_player_window_information(name)
+	local aspect = (win and win.size and win.size.y > 0) and (win.size.x / win.size.y) or (16 / 9)
+	local tan_half_fov = math.tan(math.rad(CAMERA_FOV_DEG) * 0.5)
+
+	local rx, ry
+	if dz > 0.05 then
+		local ndc_x = (dx / dz) / (tan_half_fov * aspect)
+		local ndc_y = (dy / dz) / tan_half_fov
+		rx = clamp(0.5 + 0.5 * ndc_x, 0.04, 0.96)
+		ry = clamp(0.5 - 0.5 * ndc_y, 0.04, 0.96)
+	else
+		local edge_len = math.sqrt(dx * dx + dy * dy)
+		if edge_len > 1e-4 then
+			rx = clamp(0.5 + 0.46 * (dx / edge_len), 0.04, 0.96)
+			ry = clamp(0.5 - 0.46 * (dy / edge_len), 0.04, 0.96)
+		else
+			rx, ry = 0.5, 0.5
+		end
+	end
+
+	if math.abs(rx - state.last_reticle_x) > 0.001 or math.abs(ry - state.last_reticle_y) > 0.001 then
+		player:hud_change(state.reticle_hud, "position", {x = rx, y = ry})
+		state.last_reticle_x = rx
+		state.last_reticle_y = ry
+	end
+end
+
+-----------------------------------------
+-- Monster Truck & Hidden Checkpoint Marker Entities
+-----------------------------------------
+core.register_entity(MODNAME .. ":checkpoint_marker", {
 	initial_properties = {
-		visual = "cube",
-		visual_size = {x = 0.80, y = 0.45, z = 1.50},
-		textures = {
-			"default_desert_stone.png", "default_desert_stone.png", "default_desert_stone.png",
-			"default_desert_stone.png", "default_desert_stone.png", "default_desert_stone.png",
-		},
-		is_visible = SHOW_PLACEHOLDER_MODEL,
-		glow = 4,
+		visual = "sprite",
+		textures = {"[fill:1x1:#00000000"},
+		visual_size = {x = 0.1, y = 0.1},
+		is_visible = false,
 		physical = false,
 		pointable = false,
 		collide_with_objects = false,
@@ -823,14 +1074,13 @@ core.register_entity(MODNAME .. ":turret", {
 
 core.register_entity(MODNAME .. ":truck", {
 	initial_properties = {
-		visual = "cube",
-		visual_size = {x = 2.4, y = 0.85, z = 2.8},
-		textures = {
-			"default_stone.png", "default_stone.png", "default_stone.png",
-			"default_stone.png", "default_stone.png", "[fill:16x16:#FFEE99",
-		},
-		is_visible = SHOW_PLACEHOLDER_MODEL,
-		glow = 5,
+		visual = "mesh",
+		mesh = TRUCK_MESH,
+		textures = { TRUCK_TEXTURE },
+		visual_size = {x = 1, y = 1, z = 1},
+		backface_culling = false,
+		is_visible = true,
+		glow = 2,
 		physical = false,
 		pointable = false,
 		collide_with_objects = false,
@@ -845,6 +1095,185 @@ core.register_entity(MODNAME .. ":truck", {
 })
 
 -----------------------------------------
+-- Checkpoints & Waypoint Management
+-----------------------------------------
+local function sync_next_checkpoint_marker(name, player, state)
+	local next_cp = CHECKPOINTS[state.checkpoint_idx + 1]
+	if not next_cp then
+		if state.cp_entity and state.cp_entity:is_valid() then
+			state.cp_entity:remove()
+		end
+		state.cp_entity = nil
+		if state.waypoint_hud then
+			player:hud_remove(state.waypoint_hud)
+			state.waypoint_hud = nil
+		end
+		return
+	end
+
+	local wp_pos = vector.new(next_cp.pos.x, next_cp.pos.y + 3.0, next_cp.pos.z)
+	if state.cp_entity and state.cp_entity:is_valid() then
+		state.cp_entity:set_pos(wp_pos)
+	else
+		local marker = core.add_entity(wp_pos, MODNAME .. ":checkpoint_marker")
+		if marker then
+			marker:get_luaentity().owner_name = name
+			if marker.set_observers then
+				marker:set_observers({[name] = true})
+			end
+			state.cp_entity = marker
+		end
+	end
+
+	if state.waypoint_hud then
+		player:hud_change(state.waypoint_hud, "world_pos", wp_pos)
+		player:hud_change(state.waypoint_hud, "name", next_cp.name)
+	else
+		local wp_id = player:hud_add({
+			type = "waypoint",
+			name = next_cp.name,
+			text = "m",
+			precision = 1,
+			number = 0xFFCC33,
+			world_pos = wp_pos,
+			alignment = {x = 0, y = 0},
+			offset = {x = 0, y = 0},
+		})
+		state.waypoint_hud = wp_id
+	end
+end
+
+local function advance_checkpoint(name, player, state, new_idx)
+	state.checkpoint_idx = new_idx
+	local cp = CHECKPOINTS[new_idx]
+	sync_next_checkpoint_marker(name, player, state)
+
+	if cp and state.cp_flash_hud then
+		player:hud_change(state.cp_flash_hud, "text", "CHECKPOINT: " .. string.upper(cp.name))
+		state.cp_flash_timer = 2.6
+	end
+end
+
+-----------------------------------------
+-- Truck Animation Blending & Bone Spin
+-----------------------------------------
+local function clear_wheel_overrides(truck)
+	for i = 1, 4 do
+		truck:set_bone_override(WHEEL_BONES[i], nil)
+	end
+end
+
+local function apply_wheel_spin_overrides(truck, spin_rad)
+	local rot_vec = vector.new(spin_rad, 0, 0)
+	for i = 1, 4 do
+		truck:set_bone_override(WHEEL_BONES[i], {
+			rotation = {vec = rot_vec, interpolation = 0.05, absolute = true},
+		})
+	end
+end
+
+local function update_truck_animation(state, controls, dt)
+	local truck = state.truck
+	if not truck or not truck:is_valid() then return end
+
+	local throttle = 0
+	if controls.up then throttle = throttle + 1 end
+	if controls.down then throttle = throttle - 1 end
+
+	local v_fwd = vector.dot(state.vel, state.forward)
+	local abs_fwd = math.abs(v_fwd)
+
+	if state.wheels_touching > 0 then
+		state.air_time = 0.0
+	else
+		state.air_time = state.air_time + dt
+	end
+	local is_airborne = (state.air_time >= AIR_ANIM_GRACE)
+
+	if not truck.play_animation then
+		local desired = (not is_airborne and abs_fwd < IDLE_SPEED_THRESHOLD and throttle == 0) and "idle" or "drive"
+		if state.anim_mode ~= desired then
+			if desired == "idle" then
+				truck:set_animation({x = 0.0, y = 1.2}, 1.0, 0.2, true)
+			else
+				truck:set_animation({x = 0.0, y = 0.8}, 1.0, 0.15, true)
+			end
+			state.anim_mode = desired
+		end
+		return
+	end
+
+	if is_airborne then
+		if state.anim_mode ~= "air" then
+			truck:stop_animation("drive")
+			truck:play_animation("idle", {
+				start_frame = 0.0,
+				speed = 0.0,
+				loop = false,
+				blend = 0.15,
+			})
+			state.anim_mode = "air"
+			state.last_anim_speed = 0.0
+			apply_wheel_spin_overrides(truck, state.wheel_spin_rad)
+			state.air_wheels_spinning = (throttle ~= 0)
+		end
+
+		if throttle ~= 0 then
+			state.wheel_spin_rad = (state.wheel_spin_rad - throttle * AIR_WHEEL_SPIN_SPEED * dt) % (2.0 * math.pi)
+			apply_wheel_spin_overrides(truck, state.wheel_spin_rad)
+			state.air_wheels_spinning = true
+		elseif state.air_wheels_spinning then
+			apply_wheel_spin_overrides(truck, state.wheel_spin_rad)
+			state.air_wheels_spinning = false
+		end
+		return
+	end
+
+	if state.anim_mode == "air" then
+		clear_wheel_overrides(truck)
+		state.air_wheels_spinning = false
+	end
+
+	if abs_fwd < IDLE_SPEED_THRESHOLD and throttle == 0 then
+		if state.anim_mode ~= "idle" then
+			truck:stop_animation("drive")
+			truck:play_animation("idle", {
+				speed = 1.0,
+				loop = true,
+				blend = 0.20,
+			})
+			state.anim_mode = "idle"
+			state.last_anim_speed = 1.0
+		end
+		return
+	end
+
+	local target_speed
+	if abs_fwd >= IDLE_SPEED_THRESHOLD then
+		target_speed = clamp(v_fwd * DRIVE_ANIM_SPEED_SCALE, -DRIVE_ANIM_MAX_SPEED, DRIVE_ANIM_MAX_SPEED)
+		if math.abs(target_speed) < 0.20 and throttle ~= 0 then
+			target_speed = throttle * DRIVE_STALL_SPIN_SPEED
+		end
+	else
+		target_speed = throttle * DRIVE_STALL_SPIN_SPEED
+	end
+
+	if state.anim_mode ~= "drive" then
+		truck:stop_animation("idle")
+		truck:play_animation("drive", {
+			speed = target_speed,
+			loop = true,
+			blend = 0.15,
+		})
+		state.anim_mode = "drive"
+		state.last_anim_speed = target_speed
+	elseif math.abs(target_speed - state.last_anim_speed) >= 0.05 then
+		truck:update_animation("drive", { speed = target_speed })
+		state.last_anim_speed = target_speed
+	end
+end
+
+-----------------------------------------
 -- 3D Rigid-Body & Suspension Physics Tick
 -----------------------------------------
 local function step_vehicle_physics(state, controls, dt)
@@ -853,14 +1282,16 @@ local function step_vehicle_physics(state, controls, dt)
 	local ang_vel = state.ang_vel
 
 	if not state.ground_ready then
-		if is_node_solid({x = round_int(pos.x), y = round_int(pos.y - 2), z = round_int(pos.z)}) then
+		local rx, rz = round_int(pos.x), round_int(pos.z)
+		if is_node_solid({x = rx, y = round_int(pos.y - 1), z = rz})
+			or is_node_solid({x = rx, y = round_int(pos.y - 2), z = rz})
+			or is_node_solid({x = rx, y = round_int(pos.y - 3), z = rz}) then
 			state.ground_ready = true
 		else
 			return
 		end
 	end
 
-	-- Recharging Nitro Meter
 	if state.nitro_delay > 0 then
 		state.nitro_delay = math.max(0.0, state.nitro_delay - dt)
 	end
@@ -899,7 +1330,6 @@ local function step_vehicle_physics(state, controls, dt)
 
 	local right, up, forward = orthonormalize_basis(state.forward, state.up)
 
-	-- Smooth steering wheel lock
 	local target_steer = steer * MAX_STEER_ANGLE
 	local steer_step = STEER_INPUT_SPEED * dt
 	if state.steer_angle < target_steer then
@@ -970,7 +1400,7 @@ local function step_vehicle_physics(state, controls, dt)
 	local grip_load = clamp(total_normal / GRAVITY, 0.0, 2.5)
 	local drive_traction = 0.0
 	if wheels_touching > 0 then
-		drive_traction = clamp(total_normal / (GRAVITY * 0.45), 0.35, 1.45)
+		drive_traction = clamp(total_normal / (GRAVITY * 0.45), 0.15, 1.45)
 	end
 
 	-- 3. Tire Friction, Weighty Steering & Throttle
@@ -978,7 +1408,7 @@ local function step_vehicle_physics(state, controls, dt)
 		local v_fwd = vector.dot(vel, forward)
 		local v_lat = vector.dot(vel, right)
 		local abs_fwd = math.abs(v_fwd)
-		local eff_grip = math.max(grip_load, 0.35)
+		local eff_grip = math.max(grip_load, 0.05)
 
 		local steer_sign = (v_fwd >= -0.6) and 1.0 or -1.0
 		local eff_speed = abs_fwd
@@ -994,7 +1424,7 @@ local function step_vehicle_physics(state, controls, dt)
 		local yaw_blend = math.min(1.0, STEER_YAW_RESPONSE * math.min(eff_grip, 1.2) * dt)
 		ang_vel = vector.add(ang_vel, vector.multiply(up, (target_w_yaw - cur_w_yaw) * yaw_blend))
 
-		-- Compressible Lateral Tire Grip + Mild Cornering Body Roll
+		-- Compressible Lateral Tire Grip + Top-Heavy Roll Torque
 		local req_lat_accel = -v_lat * LATERAL_GRIP * eff_grip
 		local max_lat = TIRE_MAX_LAT_ACCEL * eff_grip
 		local lat_accel = clamp(req_lat_accel, -max_lat, max_lat)
@@ -1003,7 +1433,7 @@ local function step_vehicle_physics(state, controls, dt)
 		local roll_tau = vector.multiply(forward, lat_accel * TIRE_ROLL_ARM * dt)
 		ang_vel = apply_ang_impulse(ang_vel, roll_tau, right, up, forward)
 
-		-- Forward Drive / Braking / Nitro / Drag
+		-- Forward Drive / Braking / Nitro / Rolling Resistance
 		local boosting = state.boosting
 		local target_max = boosting and NITRO_TOP_SPEED or WORLD_TOP_SPEED
 		local drive_accel = 0.0
@@ -1023,12 +1453,20 @@ local function step_vehicle_physics(state, controls, dt)
 		local new_v_fwd = vector.dot(vel, forward)
 		local drag_k = (boosting and NITRO_ACCEL or ENGINE_ACCEL) / (target_max * target_max)
 		local drag_decel = (ROLLING_DRAG * new_v_fwd + drag_k * new_v_fwd * math.abs(new_v_fwd)) * dt
+		if throttle == 0 then
+			local coast_stop = math.min(math.abs(new_v_fwd), COAST_ROLL_FRICTION * eff_grip * dt)
+			if new_v_fwd > 0 then
+				drag_decel = drag_decel + coast_stop
+			elseif new_v_fwd < 0 then
+				drag_decel = drag_decel - coast_stop
+			end
+		end
 		if math.abs(new_v_fwd) > target_max and not boosting then
 			drag_decel = drag_decel + (new_v_fwd - clamp(new_v_fwd, -target_max * 0.6, target_max)) * OVERSPEED_DRAG * dt
 		end
 		vel = vector.subtract(vel, vector.multiply(forward, drag_decel))
 
-		-- Damping on pitch/roll keeps chassis composed over bumps & halfpipe transitions
+		-- Damping on pitch/roll settles halfpipe bounce without killing high-bank rollovers
 		local w_yaw_vec = vector.multiply(up, vector.dot(ang_vel, up))
 		local w_pr_vec = vector.subtract(ang_vel, w_yaw_vec)
 		ang_vel = vector.add(w_yaw_vec, vector.multiply(w_pr_vec, math.max(0.0, 1.0 - GROUND_ANG_DAMP * dt)))
@@ -1073,6 +1511,7 @@ local function step_vehicle_physics(state, controls, dt)
 	state.right = right
 	state.up = up
 	state.forward = forward
+	state.wheels_touching = wheels_touching
 
 	-- 5. Resolve 3D Seam-Free Chassis Collisions
 	resolve_chassis_collisions(state)
@@ -1086,15 +1525,31 @@ local function init_basis_from_yaw(yaw)
 	return orthonormalize_basis(fwd, vector.new(0, 1, 0))
 end
 
-local function reset_driver_to_start(player, state)
-	local right, up, forward = init_basis_from_yaw(START_YAW)
-	state.pos = vector.new(START_POS.x, START_POS.y, START_POS.z)
+local function reset_driver_to_checkpoint(player, state)
+	local cp = (state.checkpoint_idx and state.checkpoint_idx > 0) and CHECKPOINTS[state.checkpoint_idx] or nil
+	local spawn = cp and cp.pos or START_POS
+	local yaw = cp and cp.yaw or START_YAW
+
+	core.emerge_area(
+		{x = math.floor(spawn.x) - 16, y = math.floor(spawn.y) - 12, z = math.floor(spawn.z) - 16},
+		{x = math.floor(spawn.x) + 16, y = math.floor(spawn.y) + 12, z = math.floor(spawn.z) + 16}
+	)
+
+	local right, up, forward = init_basis_from_yaw(yaw)
+	state.pos = vector.new(spawn.x, spawn.y, spawn.z)
 	state.vel = vector.zero()
 	state.ang_vel = vector.zero()
 	state.right = right
 	state.up = up
 	state.forward = forward
+	state.aim_dir = vector.copy(forward)
 	state.steer_angle = 0
+	state.wheels_touching = 0
+	state.air_time = 0
+	state.wheel_spin_rad = 0
+	state.air_wheels_spinning = false
+	state.anim_mode = nil
+	state.last_anim_speed = 0
 	state.hp = HEALTH_MAX
 	state.hp_delay = 0
 	state.nitro = NITRO_MAX
@@ -1102,11 +1557,17 @@ local function reset_driver_to_start(player, state)
 	state.boosting = false
 	state.flip_cooldown = 0
 	state.ground_ready = false
-	if state.truck and state.truck:is_valid() then
-		state.truck:set_pos(state.pos)
-		state.truck:set_rotation(safe_dir_to_rotation(forward, up))
+	if back_tracks.respawn_all_turrets then
+		back_tracks.respawn_all_turrets()
 	end
-	player:set_look_horizontal(START_YAW)
+	if state.truck and state.truck:is_valid() then
+		local vis_fwd = TRUCK_MODEL_FLIP_FWD and vector.multiply(forward, -1) or forward
+		state.truck:set_pos(vector.add(state.pos, vector.multiply(up, TRUCK_MODEL_Y_OFFSET)))
+		state.truck:set_rotation(safe_dir_to_rotation(vis_fwd, up))
+		clear_wheel_overrides(state.truck)
+	end
+	player:set_look_horizontal(yaw)
+	player:set_look_vertical(0)
 end
 
 local function enter_truck_mode(player)
@@ -1116,23 +1577,21 @@ local function enter_truck_mode(player)
 	local spawn_pos = vector.new(START_POS.x, START_POS.y, START_POS.z)
 	player:set_pos(spawn_pos)
 	player:set_look_horizontal(START_YAW)
+	player:set_look_vertical(0)
 
 	core.emerge_area(
 		{x = START_POS.x - 16, y = 0, z = START_POS.z - 16},
 		{x = START_POS.x + 16, y = 24, z = START_POS.z + 16}
 	)
 
-	local truck = core.add_entity(spawn_pos, MODNAME .. ":truck")
+	local right, up, forward = init_basis_from_yaw(START_YAW)
+	local vis_pos = vector.add(spawn_pos, vector.multiply(up, TRUCK_MODEL_Y_OFFSET))
+	local vis_fwd = TRUCK_MODEL_FLIP_FWD and vector.multiply(forward, -1) or forward
+
+	local truck = core.add_entity(vis_pos, MODNAME .. ":truck")
 	if not truck then return end
-
-	local turret = core.add_entity(vector.offset(spawn_pos, 0, TURRET_HEIGHT_OFFSET, 0), MODNAME .. ":turret")
-	if not turret then
-		truck:remove()
-		return
-	end
-
+	truck:set_rotation(safe_dir_to_rotation(vis_fwd, up))
 	truck:get_luaentity().owner_name = name
-	turret:get_luaentity().owner_name = name
 
 	local inv = player:get_inventory()
 	inv:set_list("main", {})
@@ -1151,15 +1610,38 @@ local function enter_truck_mode(player)
 		healthbar = false,
 		breathbar = false,
 		minimap = false,
+		crosshair = false,
 	})
 
 	local old_props = player:get_properties()
 	player:set_properties({visual_size = {x = 0, y = 0, z = 0}})
-	player:set_attach(truck, "", {x = 0, y = 10, z = 0}, {x = 0, y = 0, z = 0}, false)
+	player:set_attach(truck, "", CAMERA_ATTACH_OFFSET, {x = 0, y = 0, z = 0}, false)
 	player:set_camera({mode = "third"})
 	player:set_eye_offset({x = 0, y = 0, z = 0}, CAMERA_EYE_OFFSET, CAMERA_EYE_OFFSET)
 
 	local hud_ids = {}
+
+	local reticle_hud = player:hud_add({
+		type = "image",
+		position = {x = 0.5, y = 0.5},
+		offset = {x = 0, y = 0},
+		text = RETICLE_TEX,
+		scale = {x = 1.4, y = 1.4},
+		alignment = {x = 0, y = 0},
+		z_index = 10,
+	})
+	hud_ids[#hud_ids + 1] = reticle_hud
+
+	local cp_flash_hud = player:hud_add({
+		type = "text",
+		position = {x = 0.5, y = 0.22},
+		offset = {x = 0, y = 0},
+		text = "",
+		alignment = {x = 0, y = 0},
+		number = 0xFFDD44,
+		size = {x = 1.8, y = 1.8},
+	})
+	hud_ids[#hud_ids + 1] = cp_flash_hud
 
 	local speed_hud = player:hud_add({
 		type = "text",
@@ -1252,19 +1734,24 @@ local function enter_truck_mode(player)
 	})
 	hud_ids[#hud_ids + 1] = kills_hud
 
-	local right, up, forward = init_basis_from_yaw(START_YAW)
-
-	active_drivers[name] = {
+	local state = {
 		truck = truck,
-		turret = turret,
 		pos = spawn_pos,
 		vel = vector.zero(),
 		ang_vel = vector.zero(),
 		right = right,
 		up = up,
 		forward = forward,
+		aim_dir = vector.copy(forward),
 		steer_angle = 0,
 		ground_ready = false,
+
+		wheels_touching = 0,
+		air_time = 0,
+		wheel_spin_rad = 0,
+		air_wheels_spinning = false,
+		anim_mode = nil,
+		last_anim_speed = 0,
 
 		nitro = NITRO_MAX,
 		nitro_delay = 0,
@@ -1273,14 +1760,20 @@ local function enter_truck_mode(player)
 
 		hp = HEALTH_MAX,
 		hp_delay = 0,
-		lava_tick = 0,
 		kills = 0,
+
+		checkpoint_idx = 0,
+		cp_entity = nil,
+		waypoint_hud = nil,
+		cp_flash_hud = cp_flash_hud,
+		cp_flash_timer = 0,
 
 		fire_cooldown = 0,
 		light_nodes = {},
 		light_timer = 0,
 
 		hud_ids = hud_ids,
+		reticle_hud = reticle_hud,
 		speed_hud = speed_hud,
 		flip_hud = flip_hud,
 		hp_label = hp_label,
@@ -1288,6 +1781,8 @@ local function enter_truck_mode(player)
 		nitro_bar = nitro_bar,
 		kills_hud = kills_hud,
 
+		last_reticle_x = 0.5,
+		last_reticle_y = 0.5,
 		last_speed_text = "",
 		last_speed_color = 0xFFFFFF,
 		last_flipped = false,
@@ -1298,6 +1793,10 @@ local function enter_truck_mode(player)
 		saved_visual_size = old_props.visual_size,
 		had_interact = had_interact,
 	}
+
+	active_drivers[name] = state
+	sync_next_checkpoint_marker(name, player, state)
+	update_truck_animation(state, {}, 0)
 end
 
 local function exit_truck_mode(player, _silent)
@@ -1308,11 +1807,17 @@ local function exit_truck_mode(player, _silent)
 	active_drivers[name] = nil
 	clear_light_list(state.light_nodes)
 
+	if state.waypoint_hud then
+		player:hud_remove(state.waypoint_hud)
+		state.waypoint_hud = nil
+	end
 	if state.hud_ids then
 		for i = 1, #state.hud_ids do
 			player:hud_remove(state.hud_ids[i])
 		end
 	end
+
+	player:hud_set_flags({crosshair = true})
 
 	local exit_pos = state.pos and vector.offset(state.pos, 0, 1.5, 0) or player:get_pos()
 	player:set_detach()
@@ -1329,7 +1834,7 @@ local function exit_truck_mode(player, _silent)
 		core.set_player_privs(name, privs)
 	end
 
-	if state.turret and state.turret:is_valid() then state.turret:remove() end
+	if state.cp_entity and state.cp_entity:is_valid() then state.cp_entity:remove() end
 	if state.truck and state.truck:is_valid() then state.truck:remove() end
 end
 
@@ -1369,7 +1874,7 @@ end)
 core.register_on_respawnplayer(function(player)
 	local name = player:get_player_name()
 	if active_drivers[name] then
-		reset_driver_to_start(player, active_drivers[name])
+		reset_driver_to_checkpoint(player, active_drivers[name])
 	else
 		enter_truck_mode(player)
 	end
@@ -1393,7 +1898,7 @@ if back_tracks.buildMode then
 end
 
 -----------------------------------------
--- Globalstep: Time Lock, Physics, Headlights, Health & HUD
+-- Globalstep: Time Lock, Physics, Aim, Checkpoints, Headlights & HUD
 -----------------------------------------
 local tod_timer = 0
 
@@ -1416,7 +1921,7 @@ core.register_globalstep(function(dtime)
 				exit_truck_mode(player, true)
 			else
 				clear_light_list(state.light_nodes)
-				if state.turret and state.turret:is_valid() then state.turret:remove() end
+				if state.cp_entity and state.cp_entity:is_valid() then state.cp_entity:remove() end
 				if state.truck and state.truck:is_valid() then state.truck:remove() end
 				active_drivers[name] = nil
 			end
@@ -1431,32 +1936,46 @@ core.register_globalstep(function(dtime)
 			end
 
 			local up, forward = state.up, state.forward
-			local truck_rot = safe_dir_to_rotation(forward, up)
-			state.truck:set_pos(state.pos)
+			local vis_fwd = TRUCK_MODEL_FLIP_FWD and vector.multiply(forward, -1) or forward
+			local truck_rot = safe_dir_to_rotation(vis_fwd, up)
+			state.truck:set_pos(vector.add(state.pos, vector.multiply(up, TRUCK_MODEL_Y_OFFSET)))
 			state.truck:set_rotation(truck_rot)
 
-			-- Turret aim
-			if state.turret and state.turret:is_valid() then
-				local look_dir = vector.normalize(player:get_look_dir())
-				local turret_pos = vector.add(state.pos, vector.multiply(up, TURRET_HEIGHT_OFFSET))
-				state.turret:set_pos(turret_pos)
+			update_truck_animation(state, controls, clamped_dt)
 
-				local t_right = vector.cross(up, look_dir)
-				if vector.length(t_right) > 0.01 then
-					local ortho_up = vector.normalize(vector.cross(look_dir, t_right))
-					state.turret:set_rotation(safe_dir_to_rotation(look_dir, ortho_up))
-				else
-					state.turret:set_rotation(vector.dir_to_rotation(look_dir))
-				end
-			end
+			-- Update slewing aim direction & screen-space reticle
+			step_aim_reticle(name, player, state, clamped_dt)
 
-			-- Shooting (LMB)
+			-- Shooting from front bumper (LMB)
 			if state.fire_cooldown > 0 then
 				state.fire_cooldown = math.max(0, state.fire_cooldown - clamped_dt)
 			end
 			if controls.LMB and state.fire_cooldown <= 0 then
-				fire_bullet(player, state.pos, up)
+				fire_bullet(player, state)
 				state.fire_cooldown = BULLET_COOLDOWN
+			end
+
+			-- Checkpoint boundary crossing check
+			if state.checkpoint_idx < #CHECKPOINTS then
+				local next_idx = state.checkpoint_idx + 1
+				local cp = CHECKPOINTS[next_idx]
+				if cp then
+					local rel = vector.subtract(state.pos, cp.pos)
+					local side = vector.dot(rel, cp.plane_normal)
+					local horiz_d2 = rel.x * rel.x + rel.z * rel.z
+					local y_ok = (state.pos.y >= (cp.y_min or -1000)) and (state.pos.y <= (cp.y_max or 1000))
+					if side >= 0.0 and horiz_d2 <= (cp.max_dist * cp.max_dist) and y_ok then
+						advance_checkpoint(name, player, state, next_idx)
+					end
+				end
+			end
+
+			if state.cp_flash_timer > 0 then
+				state.cp_flash_timer = state.cp_flash_timer - clamped_dt
+				if state.cp_flash_timer <= 0 then
+					state.cp_flash_timer = 0
+					player:hud_change(state.cp_flash_hud, "text", "")
+				end
 			end
 
 			-- Far-casting Forward Headlight Beam
@@ -1492,10 +2011,10 @@ core.register_globalstep(function(dtime)
 				state.hp = 0
 			end
 
-			-- Health recharge or Respawn at track start
+			-- Health recharge or Respawn at last reached checkpoint
 			if state.hp <= 0 then
 				back_tracks.spawn_explosion(state.pos, 1.6)
-				reset_driver_to_start(player, state)
+				reset_driver_to_checkpoint(player, state)
 			else
 				if state.hp_delay > 0 then
 					state.hp_delay = math.max(0, state.hp_delay - clamped_dt)
