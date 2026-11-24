@@ -8,7 +8,7 @@
 
 #### A Luanti GAME JAM 2026 Submission
 
-**You are hire merc sent to destroy the sand beast of the dunes - worshiped by the empire. (TBD)**
+**You are a bounty hunter aiming to capture a Desert Beast. (TBD)**
 
 Controls:
 - W: Forward
