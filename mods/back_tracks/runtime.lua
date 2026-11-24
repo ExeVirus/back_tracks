@@ -15,8 +15,9 @@ local START_YAW = math.pi / 2 -- Faces -X down the Start Pad
 local WHEEL_HALF_X = 1.05
 local WHEEL_HALF_Z = 1.25
 local WHEEL_HUB_Y = -0.35
-local CAMERA_ATTACH_OFFSET = {x = 0, y = 26, z = -18} -- 10x model units: 2.6 up, 1.8 back
-local CAMERA_EYE_OFFSET = {x = 0, y = 7.0, z = -5}    -- Engine clamps thirdperson_back z to [-5, 5], y to [-10, 15]
+local CAMERA_ATTACH_OFFSET = {x = 0, y = 26, z = -18}     -- 10x model units: 2.6 up, 1.8 back
+local CAMERA_EYE_OFFSET = {x = 0, y = 7.0, z = -5.0}        -- Engine clamps thirdperson_back z to [-5, 5], y to [-10, 15]
+local NOSE_CAMERA_ATTACH_OFFSET = {x = 0, y = 2, z = 23}  -- 10x model units: 0.2 up (+1.625 eye_height), 2.3 forward
 
 -- Front Bumper Aim & Slewing Reticle Tuning
 local BUMPER_FWD_OFFSET = 1.95
@@ -70,11 +71,11 @@ local CHECKPOINTS = {
 	},
 	{
 		name = "Mesa",
-		pos = {x = -1201, y = 182.0, z = -33},
-		yaw = math.atan2(-56, 33),
-		plane_normal = {x = 0.98, y = 0, z = -0.20},
-		max_dist = 36,
-		y_min = 165, y_max = 210,
+		pos = {x = -1217, y = 182.0, z = -29},
+		yaw = math.atan2(-72, 29),
+		plane_normal = {x = 0.88, y = 0, z = -0.47},
+		max_dist = 26,
+		y_min = 172, y_max = 215,
 	},
 }
 
@@ -187,6 +188,16 @@ local BULLET_MAX_DIST = 220.0
 local BULLET_COOLDOWN = 0.12
 local BULLET_DAMAGE = 10
 local BULLET_TEX = "[fill:16x16:#FFFFFF^[colorize:#FF2200:255"
+
+local BOMB_COOLDOWN = 6.0
+local BOMB_GRAVITY = 18.0
+local BOMB_HOMING_RANGE = 58.0
+local BOMB_HOMING_RATE = 5.5
+local BOMB_HOMING_MAX_SPEED = 45.0
+local BOMB_SIZE = {x = 0.62, y = 0.62, z = 0.62} -- ~60% of boss rock size
+local BOMB_TEX = "[fill:16x16:#22EE44"
+local BOMB_PARTICLE_1 = "[fill:16x16:#44FF66"
+local BOMB_PARTICLE_2 = "[fill:16x16:#AAFF33"
 
 -- HUD Bar Config
 local HUD_BAR_W = 140
@@ -952,6 +963,228 @@ local function fire_bullet(player, state)
 end
 
 -----------------------------------------
+-- Player Bomb Entity (Right-Click Drop) & Nitro Thrusters
+-----------------------------------------
+core.register_entity(MODNAME .. ":bomb", {
+	initial_properties = {
+		visual = "cube",
+		visual_size = BOMB_SIZE,
+		textures = {
+			BOMB_TEX, BOMB_TEX, BOMB_TEX,
+			BOMB_TEX, BOMB_TEX, BOMB_TEX,
+		},
+		glow = 12,
+		physical = false,
+		pointable = false,
+		collide_with_objects = false,
+		static_save = false,
+	},
+
+	on_activate = function(self)
+		self.vel = vector.zero()
+		self.rot = vector.zero()
+		self.age = 0.0
+		self.fx_timer = 0.0
+		self.owner_name = nil
+	end,
+
+	on_step = function(self, dtime)
+		local dt = math.min(dtime, 0.1)
+		local pos = self.object:get_pos()
+		if not pos or not self.vel then
+			self.object:remove()
+			return
+		end
+
+		self.age = self.age + dt
+		if self.age > 8.0 or pos.y < -40.0 then
+			self.object:remove()
+			return
+		end
+
+		self.vel.y = self.vel.y - BOMB_GRAVITY * dt
+
+		-- Home horizontally toward the active boss mouth when dropped above the Mesa
+		local home_target = nil
+		for _, enemy in pairs(back_tracks.enemies) do
+			if enemy.obj and enemy.obj:is_valid() and not enemy.dead
+				and enemy.uid and enemy.uid >= 100000
+				and enemy.hit_radius and enemy.hit_radius >= 7.0 then
+				home_target = enemy.pos or enemy.obj:get_pos()
+				break
+			end
+		end
+
+		local homed = false
+		if home_target and pos.y >= home_target.y + 0.5 then
+			local to_x = home_target.x - pos.x
+			local to_z = home_target.z - pos.z
+			local h_dist = math.sqrt(to_x * to_x + to_z * to_z)
+			if h_dist <= BOMB_HOMING_RANGE then
+				local dy = math.max(0.5, pos.y - home_target.y)
+				local v_down = -self.vel.y
+				local disc = v_down * v_down + 2.0 * BOMB_GRAVITY * dy
+				local t_fall = math.max(0.18, (-v_down + math.sqrt(disc)) / BOMB_GRAVITY)
+
+				local des_vx = to_x / t_fall
+				local des_vz = to_z / t_fall
+				local des_spd = math.sqrt(des_vx * des_vx + des_vz * des_vz)
+				if des_spd > BOMB_HOMING_MAX_SPEED then
+					local s = BOMB_HOMING_MAX_SPEED / des_spd
+					des_vx = des_vx * s
+					des_vz = des_vz * s
+				end
+
+				local alpha = 1.0 - math.exp(-BOMB_HOMING_RATE * dt)
+				self.vel.x = self.vel.x + (des_vx - self.vel.x) * alpha
+				self.vel.z = self.vel.z + (des_vz - self.vel.z) * alpha
+				homed = true
+			end
+		end
+
+		if not homed then
+			local drag = math.max(0.0, 1.0 - 0.55 * dt)
+			self.vel.x = self.vel.x * drag
+			self.vel.z = self.vel.z * drag
+		end
+
+		local next_pos = vector.add(pos, vector.multiply(self.vel, dt))
+
+		-- Green particles streaming off the falling bomb
+		self.fx_timer = self.fx_timer - dt
+		if self.fx_timer <= 0.0 then
+			self.fx_timer = 0.025
+			core.add_particlespawner({
+				amount = 3,
+				time = 0.03,
+				minpos = vector.subtract(pos, vector.new(0.2, 0.2, 0.2)),
+				maxpos = vector.add(pos, vector.new(0.2, 0.2, 0.2)),
+				minvel = vector.new(-1.5, 1.5, -1.5),
+				maxvel = vector.new( 1.5, 4.5,  1.5),
+				minexptime = 0.20,
+				maxexptime = 0.40,
+				minsize = 1.8,
+				maxsize = 3.2,
+				glow = 12,
+				texture = (math.random() < 0.5) and BOMB_PARTICLE_1 or BOMB_PARTICLE_2,
+			})
+		end
+
+		local hit = raycast_solid(pos, vector.add(next_pos, vector.new(0, -0.35, 0)))
+		local mouth_hit = back_tracks.is_bomb_hit_mouth and back_tracks.is_bomb_hit_mouth(next_pos)
+
+		if hit or mouth_hit then
+			local det_pos = (hit and hit.intersection_point) or next_pos
+			back_tracks.spawn_explosion(det_pos, 1.7)
+			core.add_particlespawner({
+				amount = 24,
+				time = 0.06,
+				minpos = vector.subtract(det_pos, vector.new(0.5, 0.3, 0.5)),
+				maxpos = vector.add(det_pos, vector.new(0.5, 0.5, 0.5)),
+				minvel = vector.new(-10, 3, -10),
+				maxvel = vector.new( 10, 14, 10),
+				minacc = vector.new(0, -14, 0),
+				maxacc = vector.new(0, -10, 0),
+				minexptime = 0.25,
+				maxexptime = 0.55,
+				minsize = 2.8,
+				maxsize = 5.5,
+				glow = 14,
+				texture = BOMB_PARTICLE_1,
+			})
+
+			if back_tracks.on_bomb_explode then
+				back_tracks.on_bomb_explode(det_pos, self.owner_name)
+			end
+
+			-- Splash damage to nearby ground turrets (boss entities use uid >= 100000)
+			for _, enemy in pairs(back_tracks.enemies) do
+				if enemy.obj and enemy.obj:is_valid() and not enemy.dead
+					and (not enemy.uid or enemy.uid < 100000) then
+					local ep = enemy.pos or enemy.obj:get_pos()
+					if ep and vector.distance(ep, det_pos) <= 6.5 then
+						if enemy.kill then
+							enemy.kill(self.owner_name)
+						elseif enemy.damage then
+							enemy.damage(40, self.owner_name)
+						end
+					end
+				end
+			end
+
+			self.object:remove()
+			return
+		end
+
+		self.rot.x = self.rot.x + 3.5 * dt
+		self.rot.z = self.rot.z + 2.5 * dt
+		self.object:set_pos(next_pos)
+		self.object:set_rotation(self.rot)
+	end,
+})
+
+local function drop_bomb(player, state)
+	local spawn_pos = vector.add(state.pos, vector.multiply(state.up, -0.55))
+	if is_node_solid(vector.round(spawn_pos)) then
+		spawn_pos = vector.add(state.pos, vector.multiply(state.up, 0.35))
+	end
+
+	local bomb = core.add_entity(spawn_pos, MODNAME .. ":bomb")
+	if bomb then
+		local ent = bomb:get_luaentity()
+		ent.vel = vector.new(
+			state.vel.x * 0.48,
+			math.min(state.vel.y * 0.25, 0.0) - 5.5,
+			state.vel.z * 0.48
+		)
+		ent.owner_name = player:get_player_name()
+		state.bomb_cooldown = BOMB_COOLDOWN
+	end
+end
+
+local function spawn_nitro_thrusters(state)
+	local rear_center = vector.add(
+		vector.subtract(state.pos, vector.multiply(state.forward, 1.05)),
+		vector.multiply(state.up, 0.20)
+	)
+	local base_vel = vector.add(
+		vector.multiply(state.forward, -16.0),
+		vector.multiply(state.vel, 0.35)
+	)
+	for side = -1, 1, 2 do
+		local nozzle = vector.add(rear_center, vector.multiply(state.right, side * 0.52))
+		core.add_particlespawner({
+			amount = 4,
+			time = 0.03,
+			minpos = vector.subtract(nozzle, vector.new(0.0, 0.0, 0.0)),
+			maxpos = vector.add(nozzle, vector.new(0.12, 0.12, 0.12)),
+			minvel = vector.subtract(base_vel, vector.new(1.5, 1.5, 1.5)),
+			maxvel = vector.add(base_vel, vector.new(1.5, 1.5, 1.5)),
+			minexptime = 0.10,
+			maxexptime = 0.24,
+			minsize = 0.5,
+			maxsize = 1.0,
+			glow = 14,
+			texture = "[fill:16x16:#FF6600",
+		})
+		core.add_particlespawner({
+			amount = 2,
+			time = 0.03,
+			minpos = vector.subtract(nozzle, vector.new(0.08, 0.08, 0.08)),
+			maxpos = vector.add(nozzle, vector.new(0.08, 0.08, 0.08)),
+			minvel = vector.subtract(base_vel, vector.new(1.0, 1.0, 1.0)),
+			maxvel = vector.add(base_vel, vector.new(1.0, 1.0, 1.0)),
+			minexptime = 0.08,
+			maxexptime = 0.16,
+			minsize = 1.4,
+			maxsize = 2.6,
+			glow = 14,
+			texture = (math.random() < 0.5) and "[fill:16x16:#FFEE33" or "[fill:16x16:#FF2200",
+		})
+	end
+end
+
+-----------------------------------------
 -- Slewing Aim & Screen-Space Reticle
 -----------------------------------------
 local function clamp_pitch_dir(dir, max_pitch)
@@ -1051,7 +1284,7 @@ local function step_aim_reticle(name, player, state, dt)
 end
 
 -----------------------------------------
--- Monster Truck & Hidden Checkpoint Marker Entities
+-- Monster Truck, Checkpoint Marker & Camera Mount Entities
 -----------------------------------------
 core.register_entity(MODNAME .. ":checkpoint_marker", {
 	initial_properties = {
@@ -1081,6 +1314,29 @@ core.register_entity(MODNAME .. ":truck", {
 		backface_culling = false,
 		is_visible = true,
 		glow = 2,
+		physical = false,
+		pointable = false,
+		collide_with_objects = false,
+		static_save = false,
+	},
+
+	on_step = function(self)
+		if not self.owner_name or not active_drivers[self.owner_name] then
+			self.object:remove()
+		end
+	end,
+})
+
+core.register_entity(MODNAME .. ":cam_mount", {
+	initial_properties = {
+		visual = "cube",
+		textures = {
+			"[fill:1x1:#00000000", "[fill:1x1:#00000000", "[fill:1x1:#00000000",
+			"[fill:1x1:#00000000", "[fill:1x1:#00000000", "[fill:1x1:#00000000",
+		},
+		use_texture_alpha = true,
+		visual_size = {x = 0.001, y = 0.001, z = 0.001},
+		is_visible = true,
 		physical = false,
 		pointable = false,
 		collide_with_objects = false,
@@ -1518,8 +1774,24 @@ local function step_vehicle_physics(state, controls, dt)
 end
 
 -----------------------------------------
--- Enter / Exit Vehicle Mode
+-- Camera Mode Toggle & Checkpoint Reset
 -----------------------------------------
+local function set_truck_camera_mode(player, state, nose_on)
+	if not player or not player:is_player() then return end
+	if not state or not state.truck or not state.truck:is_valid() then return end
+
+	state.nose_cam = nose_on == true
+	if state.nose_cam and state.cam_mount and state.cam_mount:is_valid() then
+		player:set_attach(state.cam_mount, "", {x = 0, y = 0, z = 0}, {x = 0, y = 0, z = 0}, false)
+		player:set_eye_offset({x = 0, y = 0, z = 0}, {x = 0, y = 0, z = 0}, {x = 0, y = 0, z = 0})
+		player:set_camera({mode = "first"})
+	else
+		player:set_attach(state.truck, "", CAMERA_ATTACH_OFFSET, {x = 0, y = 0, z = 0}, false)
+		player:set_eye_offset({x = 0, y = 0, z = 0}, CAMERA_EYE_OFFSET, CAMERA_EYE_OFFSET)
+		player:set_camera({mode = "third"})
+	end
+end
+
 local function init_basis_from_yaw(yaw)
 	local fwd = vector.new(-math.sin(yaw), 0, math.cos(yaw))
 	return orthonormalize_basis(fwd, vector.new(0, 1, 0))
@@ -1554,11 +1826,21 @@ local function reset_driver_to_checkpoint(player, state)
 	state.hp_delay = 0
 	state.nitro = NITRO_MAX
 	state.nitro_delay = 0
+	state.nitro_fx_timer = 0
 	state.boosting = false
+	state.bomb_cooldown = 0
 	state.flip_cooldown = 0
 	state.ground_ready = false
+	state.boss_swallow_lock = false
+	state.boss_grabbed = nil
+	state.boss_last_grab_time = -100
+	state.boss_second_grab = false
+	state.boss_arena_entered = nil
 	if back_tracks.respawn_all_turrets then
 		back_tracks.respawn_all_turrets()
+	end
+	if back_tracks.reset_boss then
+		back_tracks.reset_boss()
 	end
 	if state.truck and state.truck:is_valid() then
 		local vis_fwd = TRUCK_MODEL_FLIP_FWD and vector.multiply(forward, -1) or forward
@@ -1570,6 +1852,116 @@ local function reset_driver_to_checkpoint(player, state)
 	player:set_look_vertical(0)
 end
 
+local function teleport_driver(player, target_pos, yaw)
+	local name = player:get_player_name()
+	local state = active_drivers[name]
+	if not state then
+		player:set_pos(target_pos)
+		if yaw then
+			player:set_look_horizontal(yaw)
+			player:set_look_vertical(0)
+		end
+		return
+	end
+
+	clear_light_list(state.light_nodes)
+	state.light_nodes = {}
+
+	local right, up, forward
+	if yaw then
+		right, up, forward = init_basis_from_yaw(yaw)
+		player:set_look_horizontal(yaw)
+		player:set_look_vertical(0)
+	else
+		local flat_fwd = vector.new(state.forward.x, 0, state.forward.z)
+		if vector.length(flat_fwd) < 0.01 then
+			flat_fwd = vector.new(0, 0, 1)
+		end
+		right, up, forward = orthonormalize_basis(flat_fwd, vector.new(0, 1, 0))
+	end
+
+	state.pos = vector.new(target_pos.x, target_pos.y, target_pos.z)
+	state.vel = vector.zero()
+	state.ang_vel = vector.zero()
+	state.right = right
+	state.up = up
+	state.forward = forward
+	state.steer_angle = 0
+	state.wheels_touching = 0
+	state.air_time = 0
+	state.ground_ready = false
+	state.boss_swallow_lock = false
+	state.boss_grabbed = nil
+	state.teleport_seq = (state.teleport_seq or 0) + 1
+	local seq = state.teleport_seq
+
+	if state.truck and state.truck:is_valid() then
+		local vis_fwd = TRUCK_MODEL_FLIP_FWD and vector.multiply(forward, -1) or forward
+		state.truck:set_pos(vector.add(state.pos, vector.multiply(up, TRUCK_MODEL_Y_OFFSET)))
+		state.truck:set_rotation(safe_dir_to_rotation(vis_fwd, up))
+		clear_wheel_overrides(state.truck)
+	end
+
+	local p = vector.round(state.pos)
+	core.emerge_area(
+		{x = p.x - 16, y = p.y - 12, z = p.z - 16},
+		{x = p.x + 16, y = p.y + 12, z = p.z + 16},
+		function(_, _, calls_remaining)
+			if calls_remaining == 0 then
+				local cur = active_drivers[name]
+				if cur and cur.teleport_seq == seq then
+					cur.ground_ready = true
+				end
+			end
+		end
+	)
+end
+back_tracks.teleport_driver = teleport_driver
+
+core.register_chatcommand("tel", {
+	params = "<X>,<Y>,<Z> | <to_name>",
+	description = "Teleport truck (or player) to coordinates or another player",
+	privs = {teleport = true},
+	func = function(name, param)
+		local player = core.get_player_by_name(name)
+		if not player then
+			return false, "Player not found."
+		end
+
+		local state = active_drivers[name]
+		local relpos = state and state.pos or player:get_pos()
+
+		local sx, sy, sz = param:match("^%s*([%d.~+-]+)[,%s]+([%d.~+-]+)[,%s]+([%d.~+-]+)%s*$")
+		if sx and sy and sz then
+			local x = core.parse_relative_number(sx, relpos.x)
+			local y = core.parse_relative_number(sy, relpos.y)
+			local z = core.parse_relative_number(sz, relpos.z)
+			if x and y and z and math.isfinite(x) and math.isfinite(y) and math.isfinite(z) then
+				local dest = vector.new(x, y, z)
+				teleport_driver(player, dest)
+				return true, "Teleporting to " .. core.pos_to_string(dest, 1)
+			end
+		end
+
+		local target_name = param:match("^%s*([^%s]+)%s*$")
+		if target_name then
+			local target = core.get_player_by_name(target_name)
+			if not target then
+				return false, "Target player '" .. target_name .. "' not found."
+			end
+			local t_state = active_drivers[target_name]
+			local dest = t_state and vector.copy(t_state.pos) or target:get_pos()
+			teleport_driver(player, dest)
+			return true, "Teleporting to " .. target_name .. " at " .. core.pos_to_string(dest, 1)
+		end
+
+		return false, "Invalid usage. Use: /tel <X>,<Y>,<Z> or /tel <player>"
+	end,
+})
+
+-----------------------------------------
+-- Enter / Exit Vehicle Mode
+-----------------------------------------
 local function enter_truck_mode(player)
 	local name = player:get_player_name()
 	if active_drivers[name] then return end
@@ -1593,6 +1985,12 @@ local function enter_truck_mode(player)
 	truck:set_rotation(safe_dir_to_rotation(vis_fwd, up))
 	truck:get_luaentity().owner_name = name
 
+	local cam_mount = core.add_entity(vis_pos, MODNAME .. ":cam_mount")
+	if cam_mount then
+		cam_mount:get_luaentity().owner_name = name
+		cam_mount:set_attach(truck, "", NOSE_CAMERA_ATTACH_OFFSET, {x = 0, y = 0, z = 0}, true)
+	end
+
 	local inv = player:get_inventory()
 	inv:set_list("main", {})
 	inv:set_size("main", 0)
@@ -1615,9 +2013,6 @@ local function enter_truck_mode(player)
 
 	local old_props = player:get_properties()
 	player:set_properties({visual_size = {x = 0, y = 0, z = 0}})
-	player:set_attach(truck, "", CAMERA_ATTACH_OFFSET, {x = 0, y = 0, z = 0}, false)
-	player:set_camera({mode = "third"})
-	player:set_eye_offset({x = 0, y = 0, z = 0}, CAMERA_EYE_OFFSET, CAMERA_EYE_OFFSET)
 
 	local hud_ids = {}
 
@@ -1723,6 +2118,35 @@ local function enter_truck_mode(player)
 	hud_ids[#hud_ids + 1] = nitro_bg
 	hud_ids[#hud_ids + 1] = nitro_bar
 
+	local bomb_label = player:hud_add({
+		type = "text",
+		position = {x = 0.5, y = 0.968},
+		offset = {x = -95, y = 0},
+		text = "",
+		alignment = {x = -1, y = 0},
+		number = 0x55FF66,
+		size = {x = 1, y = 1},
+	})
+	local bomb_bg = player:hud_add({
+		type = "image",
+		position = {x = 0.5, y = 0.968},
+		offset = {x = 0, y = 0},
+		text = "[fill:16x16:#222222",
+		scale = {x = 0, y = 0},
+		alignment = {x = 0, y = 0},
+	})
+	local bomb_bar = player:hud_add({
+		type = "image",
+		position = {x = 0.5, y = 0.968},
+		offset = {x = -HUD_BAR_W * 0.5, y = 0},
+		text = "[fill:16x16:#33EE55",
+		scale = {x = 0, y = 0},
+		alignment = {x = 1, y = 0},
+	})
+	hud_ids[#hud_ids + 1] = bomb_label
+	hud_ids[#hud_ids + 1] = bomb_bg
+	hud_ids[#hud_ids + 1] = bomb_bar
+
 	local kills_hud = player:hud_add({
 		type = "text",
 		position = {x = 0.96, y = 0.06},
@@ -1736,6 +2160,7 @@ local function enter_truck_mode(player)
 
 	local state = {
 		truck = truck,
+		cam_mount = cam_mount,
 		pos = spawn_pos,
 		vel = vector.zero(),
 		ang_vel = vector.zero(),
@@ -1746,6 +2171,12 @@ local function enter_truck_mode(player)
 		steer_angle = 0,
 		ground_ready = false,
 
+		boss_swallow_lock = false,
+		boss_grabbed = nil,
+		boss_last_grab_time = -100,
+		boss_second_grab = false,
+		boss_arena_entered = nil,
+
 		wheels_touching = 0,
 		air_time = 0,
 		wheel_spin_rad = 0,
@@ -1755,8 +2186,12 @@ local function enter_truck_mode(player)
 
 		nitro = NITRO_MAX,
 		nitro_delay = 0,
+		nitro_fx_timer = 0,
 		boosting = false,
 		flip_cooldown = 0,
+
+		nose_cam = false,
+		prev_aux1 = false,
 
 		hp = HEALTH_MAX,
 		hp_delay = 0,
@@ -1769,6 +2204,7 @@ local function enter_truck_mode(player)
 		cp_flash_timer = 0,
 
 		fire_cooldown = 0,
+		bomb_cooldown = 0,
 		light_nodes = {},
 		light_timer = 0,
 
@@ -1779,6 +2215,9 @@ local function enter_truck_mode(player)
 		hp_label = hp_label,
 		hp_bar = hp_bar,
 		nitro_bar = nitro_bar,
+		bomb_label = bomb_label,
+		bomb_bg = bomb_bg,
+		bomb_bar = bomb_bar,
 		kills_hud = kills_hud,
 
 		last_reticle_x = 0.5,
@@ -1788,6 +2227,8 @@ local function enter_truck_mode(player)
 		last_flipped = false,
 		last_hp_px = -1,
 		last_nitro_px = -1,
+		last_bomb_px = -1,
+		last_bomb_text = "",
 		last_kills = -1,
 
 		saved_visual_size = old_props.visual_size,
@@ -1795,6 +2236,7 @@ local function enter_truck_mode(player)
 	}
 
 	active_drivers[name] = state
+	set_truck_camera_mode(player, state, false)
 	sync_next_checkpoint_marker(name, player, state)
 	update_truck_animation(state, {}, 0)
 end
@@ -1835,6 +2277,7 @@ local function exit_truck_mode(player, _silent)
 	end
 
 	if state.cp_entity and state.cp_entity:is_valid() then state.cp_entity:remove() end
+	if state.cam_mount and state.cam_mount:is_valid() then state.cam_mount:remove() end
 	if state.truck and state.truck:is_valid() then state.truck:remove() end
 end
 
@@ -1922,17 +2365,27 @@ core.register_globalstep(function(dtime)
 			else
 				clear_light_list(state.light_nodes)
 				if state.cp_entity and state.cp_entity:is_valid() then state.cp_entity:remove() end
+				if state.cam_mount and state.cam_mount:is_valid() then state.cam_mount:remove() end
 				if state.truck and state.truck:is_valid() then state.truck:remove() end
 				active_drivers[name] = nil
 			end
 		else
 			local controls = player:get_player_control()
 
-			local speed_est = vector.length(state.vel) + 15.0
-			local n_steps = clamp(math.ceil((speed_est * clamped_dt) / MAX_DISP_PER_STEP), 2, MAX_SUB_STEPS)
-			local step_dt = clamped_dt / n_steps
-			for _ = 1, n_steps do
-				step_vehicle_physics(state, controls, step_dt)
+			-- Toggle between normal third-person view and nose view with Aux1 (E)
+			local aux_pressed = controls.aux1 == true
+			if aux_pressed and not state.prev_aux1 then
+				set_truck_camera_mode(player, state, not state.nose_cam)
+			end
+			state.prev_aux1 = aux_pressed
+
+			if not state.boss_swallow_lock then
+				local speed_est = vector.length(state.vel) + 15.0
+				local n_steps = clamp(math.ceil((speed_est * clamped_dt) / MAX_DISP_PER_STEP), 2, MAX_SUB_STEPS)
+				local step_dt = clamped_dt / n_steps
+				for _ = 1, n_steps do
+					step_vehicle_physics(state, controls, step_dt)
+				end
 			end
 
 			local up, forward = state.up, state.forward
@@ -1953,6 +2406,25 @@ core.register_globalstep(function(dtime)
 			if controls.LMB and state.fire_cooldown <= 0 then
 				fire_bullet(player, state)
 				state.fire_cooldown = BULLET_COOLDOWN
+			end
+
+			-- Bomb drop (RMB) with 10s cooldown
+			if state.bomb_cooldown > 0 then
+				state.bomb_cooldown = math.max(0, state.bomb_cooldown - clamped_dt)
+			end
+			if (controls.RMB or controls.place) and state.bomb_cooldown <= 0 and not state.boss_swallow_lock then
+				drop_bomb(player, state)
+			end
+
+			-- Nitro thruster flames out the rear exhaust
+			if state.boosting then
+				state.nitro_fx_timer = state.nitro_fx_timer - clamped_dt
+				if state.nitro_fx_timer <= 0 then
+					state.nitro_fx_timer = 0.025
+					spawn_nitro_thrusters(state)
+				end
+			else
+				state.nitro_fx_timer = 0
 			end
 
 			-- Checkpoint boundary crossing check
@@ -2054,6 +2526,24 @@ core.register_globalstep(function(dtime)
 			if nitro_px ~= state.last_nitro_px then
 				player:hud_change(state.nitro_bar, "scale", {x = nitro_px / 16, y = HUD_BAR_H / 16})
 				state.last_nitro_px = nitro_px
+			end
+
+			local bomb_px = (state.bomb_cooldown > 0)
+				and math.max(1, math.floor((state.bomb_cooldown / BOMB_COOLDOWN) * HUD_BAR_W + 0.5))
+				or 0
+			local bomb_txt = (state.bomb_cooldown > 0)
+				and string.format("BOMB %ds", math.ceil(state.bomb_cooldown))
+				or ""
+
+			if bomb_txt ~= state.last_bomb_text then
+				player:hud_change(state.bomb_label, "text", bomb_txt)
+				local bg_visible = (bomb_px > 0)
+				player:hud_change(state.bomb_bg, "scale", bg_visible and {x = HUD_BAR_W / 16, y = HUD_BAR_H / 16} or {x = 0, y = 0})
+				state.last_bomb_text = bomb_txt
+			end
+			if bomb_px ~= state.last_bomb_px then
+				player:hud_change(state.bomb_bar, "scale", (bomb_px > 0) and {x = bomb_px / 16, y = HUD_BAR_H / 16} or {x = 0, y = 0})
+				state.last_bomb_px = bomb_px
 			end
 
 			if state.kills ~= state.last_kills then

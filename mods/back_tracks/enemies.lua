@@ -190,7 +190,6 @@ for _, r in ipairs({
 	{s = 63, dz = -15},
 	{s = 166, dz = 0}, 
 	{s = 268, dz = 0},
-	{s = 315, dz = 0},
 }) do
 	local x = -300 - r.s
 	local z = ramp_track_z(x) + r.dz
@@ -203,8 +202,8 @@ local causeway_paths = {
 	{ {-640, 12,  4},                                  {-745,  3,  68},                 {-868,  5,  50},                                },
 	{                 {-658, 10, -10},                 {-745,  3, -68}, {-805,  3, -70},                 {-915,  9,-22}, {-946, 12,  0} },
 	-- Skyways (index 4..5 here)
-	{ {-656, 10,  10},                 {-735, 36,  34}, {-800, 44,  16}, {-865, 34,  38},                 },
-	{ {-656, 10, -10}, {-682, 22, -26}, {-735, 36, -34},                 {-865, 34, -38}, {-912, 23, -22} },
+	{ {-656, 10,  10},                                 {-800, 44,  16}, {-865, 34,  38},                 },
+	{                 {-682, 22, -26}, {-735, 36, -34},                                  {-912, 23, -22} },
 }
 for p_idx, path in ipairs(causeway_paths) do
 	for seg = 2, #path - 2 do
@@ -219,8 +218,8 @@ for i = 0, 9 do
 	local phi = 0.65 + i * 0.57
 	local yc = eval_lower_spiral_y(phi)
 	local rc = mtn_radius_at_height(yc) + 2
-	local r_wall = rc + 12.2
-	add_spawn(MX + r_wall * math.cos(phi), MZ + r_wall * math.sin(phi), yc + 13, yc + 24, "lower_spiral_outer_wall")
+	local r_wall = rc + 12.2 + 2
+	add_spawn(MX + r_wall * math.cos(phi), MZ + r_wall * math.sin(phi), yc + 11, yc + 22, "lower_spiral_outer_wall")
 	if i % 2 == 1 then
 		local dr_climb = (i % 4 == 1) and 7.5 or -7.5
 		local r_climb = rc + dr_climb
@@ -233,8 +232,8 @@ for i = 0, 9 do
 	local theta = math.pi + phi_u
 	local yc = eval_upper_spiral_y(phi_u)
 	local rc = mtn_radius_at_height(yc) + ((phi_u < 0.92 * math.pi) and 2 or 1)
-	local r_wall = rc + 12.0
-	add_spawn(MX + r_wall * math.cos(theta), MZ + r_wall * math.sin(theta), yc + 13, yc + 25, "upper_spiral_outer_wall")
+	local r_wall = rc + 12.0 + 3
+	add_spawn(MX + r_wall * math.cos(theta), MZ + r_wall * math.sin(theta), yc + 11, yc + 22, "upper_spiral_outer_wall")
 	if i % 2 == 0 then
 		local dr_climb = (rc - 7.5 > R_MESA + 4 and i % 4 == 0) and -7.5 or 7.5
 		local r_climb = rc + dr_climb
