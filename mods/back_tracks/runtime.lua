@@ -2363,7 +2363,11 @@ core.register_on_joinplayer(function(player)
 
 	core.after(0.05, function()
 		if player and player:is_player() then
-			enter_truck_mode(player)
+			if back_tracks.start_intro then
+				back_tracks.start_intro(player)
+			else
+				enter_truck_mode(player)
+			end
 		end
 	end)
 end)
@@ -2618,7 +2622,7 @@ core.register_globalstep(function(dtime)
 				player:hud_change(state.kills_hud, "text", "KILLS: " .. state.kills)
 				state.last_kills = state.kills
 			end
-			
+
 			-- Update Mission Timer
 			if state.timer_running then
 				state.run_timer = state.run_timer + clamped_dt
@@ -2667,3 +2671,4 @@ core.register_on_shutdown(function()
 	end
 	light_refs = {}
 end)
+back_tracks.enter_truck_mode = enter_truck_mode

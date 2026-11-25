@@ -603,15 +603,29 @@ core.register_globalstep(function(dtime)
 	if spawn_scan_timer < SPAWN_SCAN_INTERVAL then return end
 	spawn_scan_timer = 0
 
-	if not next(back_tracks.active_drivers) then return end
+	local has_drivers = next(back_tracks.active_drivers) ~= nil
+	local has_intro = back_tracks.intro_view_positions and next(back_tracks.intro_view_positions) ~= nil
+	if not has_drivers and not has_intro then return end
 
 	for i = 1, #TURRET_SPAWNS do
 		local s = TURRET_SPAWNS[i]
 		if not s.dead and (not s.obj or not s.obj:is_valid()) then
+			local spawned = false
 			for _, dstate in pairs(back_tracks.active_drivers) do
 				if dstate and dstate.pos then
 					local dx = dstate.pos.x - s.x
 					local dz = dstate.pos.z - s.z
+					if dx * dx + dz * dz <= SPAWN_RADIUS_2 then
+						spawn_turret(s)
+						spawned = true
+						break
+					end
+				end
+			end
+			if not spawned and has_intro then
+				for _, ipos in pairs(back_tracks.intro_view_positions) do
+					local dx = ipos.x - s.x
+					local dz = ipos.z - s.z
 					if dx * dx + dz * dz <= SPAWN_RADIUS_2 then
 						spawn_turret(s)
 						break

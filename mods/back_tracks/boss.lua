@@ -1547,7 +1547,7 @@ local function update_boss_hud(name, player, dstate, dt)
 	else
 		local in_sub = count_subdued(boss.inner)
 		if in_sub >= REQUIRED_INNER_SUBDUED then
-			status_txt = "MOUTH EXPOSED! RAMP JUMP & DROP A BOMB (RMB)!"
+			status_txt = "MOUTH EXPOSED! RAMP JUMP & DROP A BOMB (Right Click)!"
 			status_col = 0x44FF88
 		else
 			status_txt = string.format("SUBDUE TENTACLES: %d/%d", in_sub, REQUIRED_INNER_SUBDUED)

@@ -23,5 +23,6 @@ end
 dofile(back_tracks.mod_path .. "/nodes.lua")
 core.register_mapgen_script(back_tracks.mod_path .. "/mapgen.lua")
 dofile(back_tracks.mod_path .. "/runtime.lua")
+dofile(back_tracks.mod_path .. "/intro.lua")
 dofile(back_tracks.mod_path .. "/enemies.lua")
 dofile(back_tracks.mod_path .. "/boss.lua")
