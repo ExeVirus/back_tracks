@@ -273,6 +273,17 @@ local function round_int(v)
 end
 back_tracks.round_int = round_int
 
+local function format_time(t)
+	local total_cs = math.floor(math.max(0, t or 0) * 100 + 0.5)
+	local cs = total_cs % 100
+	local total_sec = math.floor(total_cs / 100)
+	local sec = total_sec % 60
+	local min = math.floor(total_sec / 60)
+	return string.format("%02d:%02d.%02d", min, sec, cs)
+end
+back_tracks.format_time = format_time
+
+
 local function is_node_solid(pos)
 	local node = core.get_node_or_nil(pos)
 	if not node or node.name == "air" or node.name == "ignore" then
@@ -2169,14 +2180,25 @@ local function enter_truck_mode(player)
 	hud_ids[#hud_ids + 1] = bomb_bg
 	hud_ids[#hud_ids + 1] = bomb_bar
 
+	local timer_hud = player:hud_add({
+		type = "text",
+		position = {x = 0.96, y = 0.025},
+		offset = {x = 0, y = 0},
+		text = "TIME: 00:00.00",
+		alignment = {x = -1, y = 0},
+		number = 0xFFFFFF,
+		size = {x = 1.4, y = 1.4},
+	})
+	hud_ids[#hud_ids + 1] = timer_hud
+
 	local kills_hud = player:hud_add({
 		type = "text",
-		position = {x = 0.96, y = 0.06},
+		position = {x = 0.96, y = 0.065},
 		offset = {x = 0, y = 0},
 		text = "KILLS: 0",
 		alignment = {x = -1, y = 0},
 		number = 0xFFCC44,
-		size = {x = 1.5, y = 1.5},
+		size = {x = 1.4, y = 1.4},
 	})
 	hud_ids[#hud_ids + 1] = kills_hud
 
@@ -2257,6 +2279,14 @@ local function enter_truck_mode(player)
 
 		saved_visual_size = old_props.visual_size,
 		had_interact = had_interact,
+
+		-- Mission Run Timer
+		run_timer = 0,
+		timer_running = true,
+		final_time = nil,
+		timer_hud = timer_hud,
+		last_timer_text = "",
+		last_timer_color = 0xFFFFFF,
 	}
 
 	active_drivers[name] = state
@@ -2582,6 +2612,28 @@ core.register_globalstep(function(dtime)
 			if bomb_px ~= state.last_bomb_px then
 				player:hud_change(state.bomb_bar, "scale", (bomb_px > 0) and {x = bomb_px / 16, y = HUD_BAR_H / 16} or {x = 0, y = 0})
 				state.last_bomb_px = bomb_px
+			end
+
+			if state.kills ~= state.last_kills then
+				player:hud_change(state.kills_hud, "text", "KILLS: " .. state.kills)
+				state.last_kills = state.kills
+			end
+			
+			-- Update Mission Timer
+			if state.timer_running then
+				state.run_timer = state.run_timer + clamped_dt
+			end
+
+			local time_str = "TIME: " .. format_time(state.run_timer)
+			if time_str ~= state.last_timer_text then
+				player:hud_change(state.timer_hud, "text", time_str)
+				state.last_timer_text = time_str
+			end
+
+			local target_timer_col = state.timer_running and 0xFFFFFF or 0x44FF88
+			if target_timer_col ~= state.last_timer_color then
+				player:hud_change(state.timer_hud, "number", target_timer_col)
+				state.last_timer_color = target_timer_col
 			end
 
 			if state.kills ~= state.last_kills then

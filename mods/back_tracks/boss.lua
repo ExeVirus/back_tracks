@@ -706,16 +706,17 @@ end
 -----------------------------------------
 -- Victory Formspec
 -----------------------------------------
-local function show_victory_formspec(player, kills)
+local function show_victory_formspec(player, kills, final_time)
+	local time_str = back_tracks.format_time and back_tracks.format_time(final_time or 0) or "00:00.00"
 	local fs = table.concat({
 		"formspec_version[6]",
-		"size[10.5,6.8]",
+		"size[10.5,7.4]",
 		"bgcolor[#0E0A16EE;both]",
-		"box[0.4,0.4;9.7,6.0;#1B1428CC]",
+		"box[0.4,0.4;9.7,6.6;#1B1428CC]",
 		"hypertext[0.6,0.7;9.3,1.4;win_title;<center><bigger><style color=#FFDD44><b>YOU WIN!</b></style></bigger></center>]",
-		"hypertext[0.8,2.1;8.9,1.8;win_body;<center><style color=#FFFFFF size=18>The Mesa Beast has been defeated!</style>\n\n<style color=#88EEFF size=15>Enemies & Tentacles Subdued: " .. tostring(kills or 0) .. "</style></center>]",
-		"button_exit[1.4,4.7;3.4,1.1;play_again;Play Again]",
-		"button_exit[5.7,4.7;3.4,1.1;continue;Keep Driving]",
+		"hypertext[0.8,2.1;8.9,2.5;win_body;<center><style color=#FFFFFF size=18>The Mesa Beast has been defeated!</style>\n\n<style color=#88EEFF size=16><b>Final Time: " .. time_str .. "</b></style>\n<style color=#FFAA44 size=15>Enemies & Tentacles Subdued: " .. tostring(kills or 0) .. "</style></center>]",
+		"button_exit[1.4,5.3;3.4,1.1;play_again;Play Again]",
+		"button_exit[5.7,5.3;3.4,1.1;continue;Keep Driving]",
 	})
 	core.show_formspec(player:get_player_name(), MODNAME .. ":victory", fs)
 end
@@ -728,6 +729,13 @@ core.register_on_player_receive_fields(function(player, formname, fields)
 		if dstate then
 			dstate.checkpoint_idx = 0
 			dstate.kills = 0
+			dstate.run_timer = 0
+			dstate.final_time = nil
+			dstate.timer_running = true
+			dstate.last_timer_color = 0xFFFFFF
+			if dstate.timer_hud then
+				player:hud_change(dstate.timer_hud, "number", 0xFFFFFF)
+			end
 		end
 		player:set_hp(0)
 		back_tracks.reset_boss()
@@ -1831,6 +1839,14 @@ core.register_globalstep(function(dtime)
 				boss.state = "dying"
 				boss.death_timer = DEATH_EXPLODE_TIME
 				back_tracks.spawn_explosion(vector.new(MX, 181, MZ), 2.8)
+
+				-- Lock in the final mission time the moment the beast is defeated
+				for _, dstate in pairs(back_tracks.active_drivers) do
+					if dstate.timer_running then
+						dstate.timer_running = false
+						dstate.final_time = dstate.run_timer
+					end
+				end
 			else
 				boss.state = "active"
 				boss.writhe_is_phase2 = false
@@ -1863,7 +1879,7 @@ core.register_globalstep(function(dtime)
 				local player = core.get_player_by_name(name)
 				if player and player:is_player() then
 					back_tracks.register_kill(name)
-					show_victory_formspec(player, dstate.kills)
+					show_victory_formspec(player, dstate.kills, dstate.final_time or dstate.run_timer)
 				end
 			end
 			return
