@@ -6,6 +6,8 @@ Every idea/mechanic is my own ideas/thoughts, and very much the map you play is 
 I have editted and tuned both files however, so I'll lump it with the rest of the source code.
 
 Textures are drummyfish's handpainted CC0 licensed assets. You can get them from there or use them from here under MIT.
+
+The Truck model was made by me in Blockbench.
 -----------
 MIT License
 
